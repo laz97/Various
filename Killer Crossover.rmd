@@ -1,0 +1,361 @@
+---
+title: "Killer Crossover, Mvmt. I: LUNA/Solana"
+author: "laz97"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+## Introduction
+
+Recently, a variety of projects that offer option “vaults”have gained popularity, such as Ribbon, Katana, and Friktion. Among their offerings, are covered call strategies: option strategies that consist in buying an asset and selling an out-of-the-money call option on such asset.  
+
+This document fundamentally challenges the value that these covered-calls option vaults provide. The key argument is that option selling should not be price insensitive, so systematically selling options is doomed to underperform.  
+
+As a part of our analysis, we consider Friktion’s LUNA covered-call vault. We analyze LUNA’s returns over different time periods and compare returns of holding LUNA vs the returns of a simulated covered-call vault.
+
+Luna prices are obtained from CoinGecko’s API. Friktion data from its [analytics dashboard](https://app.friktion.fi/analytics/fcLUNA). 
+
+Code can be accessed here [here](https://github.com/laz97/Various/blob/0a4516871f851a316e32ce6e6e993152916718b4/Killer%20Crossover,%20Mvmt.%20I%20LUNASolana.r).
+
+## Debunking systematic covered calls
+
+A covered call strategy consists in buying an asset and selling an out-of-the-money call on such an asset. With this strategy, potential gains are capped since the asset' returns in excess of the strike price are offset by the option´s losses. On the other hand, losses are potentially unlimited since the asset can go to zero.
+
+The strategy´s returns can be decomposed in two parts: the asset’s returns and the option’s returns. The asset’s return calculation is straightforward, and the option’s return can be calculated as $c_0 - Max(0,S_t - K)$ , where $c_0$ is the premium collected by selling the call, $S_t$ is the asset price at expiration and $K$ is the strike price. In this sense, if the asset price is below the strike price at expiration, the strategy will earn the asset’s return plus the option premium collected, since the option will expire worthless. However, if the asset price is above the strike price at expiration,the option will be exercised, and the strategy’s return will be capped by the strike price plus the premium collected. 
+
+Again, in essence, such a strategy is exposed to similar losses as just holding the asset while capping the potential gains to the point where the call would be exercised. In exchange for capping possible gains, the investor is rewarded with the option premium. In general, covered call strategies can be very costly and provide a risk-return profile (unlimited losses, capped gains) that is not convenient for most investors.
+
+The payoff profile,benefits and risks of this strategy can be best explained using examples under three different scenarios: upward trends, downward trends, and sideways trends.For the ease of explanation, let’s assume that the asset is LUNA, options expire in 7 days, the strike price is 15% above the asset price when the positions are opened, and the average call price (premium collected) is 0.92% (which corresponds to the average premium collected by the Friktion covered calls strategy on LUNA since inception).
+
+Under the upward trend scenario, the asset’s return will be positive, and the option premium will be collected as long as LUNA does not rise more than 15% in 7 days, so the strategy’s return will be LUNA’s return plus 0.92%. However, if the trend is strong and LUNA rises 20% (for example), the option’s return will be -4.08%(-5% plus 0.92%), underperforming the simple buy and hold strategy by such amount. In this sense, a covered call strategy does not seem appropriate since it will under perform the asset’s return, especially if the trend is strong.
+
+Under the downward trend scenario, the call will expire worthless and the premium will be collected, but the asset price will suffer losses. If, for example, LUNA drops20%, the strategy will return -19.08%. Although it outperforms the buy-and-hold strategy, it has roughly the same amount of downward risk. In this sense, the benefits of a covered call strategy in downtrend scenarios are negligible.
+
+Finally, sideways scenarios appear to be the ideal setup for a covered call, since the calls will expire worthless (therefore earning the premium) and the assets will virtually have zero returns, outperforming the buy and hold strategy. However, this must be analyzed carefully. Let’s consider the strategy’s returns over 14 days (i.e.two 7 day periods or epochs), and assume that LUNA rises 10% in the first 7 days while drops 9.09% the following 7 days, virtually leaving the price of LUNA unchanged at the end of the 14 days. Under this scenario, both calls sold will expire worthless, earning a premium of 1.84% over the whole period, while the asset returned zero. In contrast, let’s assume that LUNA returns 20% during the first 7 days and then drops 16.66% over the next 7 days (leaving the price unchanged at the end of the whole period). Under this scenario, the first call sold will have a return of -4.02% (15%-20%+0.92%), while the second call sold will expire worthless and yield 0.92%. Thus, the overall return of the covered call strategy will be roughly -3.1% over 14 days, while LUNA remained unchanged.
+
+The difference in the performance under these two assumptions highlights one of the core aspects of covered calls: the strategy will outperform the asset’s returns as long as the implied volatility (i.e. the volatility embedded in the call’s price^[The higher the “implied volatility”, the higher the option’s price and vice versa.])is higher than the realized volatility (i.e. the volatility observed in the price movements). In other words, if the probability of LUNA reaching the strike price (which is embedded in the call’s implied volatility, and subsequently,the call’s price) is higher than the observed price movement in LUNA, then the covered call will outperform; otherwise, it will underperform the asset’s return. This leads to the very important conclusion that covered calls strategies must be price sensitive, and should not be systematic. If the strategy sells calls when their prices are “high”, then it will outperform; but if the calls are sold in a systematic way without considering if the prices are rich or cheap, then it has a high probability of underperforming in the long run.
+
+Some might argue, in defense of these option vaults, that “option strikes and expiries are algorithmically determined to maximize your returns and minimize the chance of an option being called or underlying asset assigned” (from Friktion’s website) and this “optimization” should ease the concerns explained above.However, this would be quite misguided, as minimizing the probability of the call being exercised does nothing to mitigate the main problem of systematically selling options: if realized volatility is greater than the implied volatility in the options we sold, we will end up worse than if we did not sell options.
+
+## Some numbers
+
+We have already established why, theoretically, systematic covered call strategies should underperform. In this section, we will show a few charts that might help visualize where the costs of covered call strategies lie.
+
+In order to build these charts, we had to make just two assumptions about the strategy pursued:
+
+* Weekly covered calls are sold on each Friday
+* These calls’ strike prices are 15% above LUNA’s price at the end of the previous day (rounded to the nearest 0.5)
+
+All data used was obtained from CoinGecko’s free API in and the spirit of reproducibility all code is made public.
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Libraries
+library(tidyverse)
+library(tidyquant)
+library(geckor)
+library(ggplot2)
+library(plotly)
+library(RColorBrewer)
+library(ggdark)
+
+
+#Get LUNA prices
+LUNA <- coin_history(
+  "terra-luna",
+  vs_currency = "usd",
+  days = 365,
+  interval = NULL,
+  max_attempts = 3
+)
+
+
+#Strike multiplier
+strike_multiplier <- 1.15
+average_premium <- 0.00
+
+```
+
+The first chart compares LUNA’s price to the hypothetical strike prices we built, in such a manner that the reader can easily observe the points in time where the asset’s price exceeded the strike price (if it continued until the end of the week, it means that the option would have been exercised resulting in opportunity costs for holders). The second chart shows the performance of two hypothetical portfolios: one that buys and holds LUNA and one that mimics a covered call strategy that sells weekly 15% otm calls BUT DOES NOT COLLECT PREMIUMS (the so-called yields). This decision was made given the difficulty of estimating past option prices or obtaining the data. However, we still believe that it is good a didactic exercise to show the opportunity costs of capping the upside while leaving the downside virtually untouched. It also allows to very crudely estimate the average weekly premium that such sold options would have had to collect in order for both strategies to have similar returns over the time period.
+
+Finally, a summary table of the first plot is provided.
+
+# YTD
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#Price vs strike plot function
+plot_price_vs_strike <- function(DF, plot_title = "PLOT") {
+  p1 <-  ggplot(DF, aes(x=timestamp, y = value, color = type, linetype = type)) +
+    geom_line(data = subset(DF, type == "price")) +
+    geom_segment(data = subset(DF, type == "simulated_strike"), aes(x = lag(timestamp), y = value,
+                                                                    xend = timestamp, yend = value)) +
+    scale_color_brewer(palette = "Set3") +
+    dark_theme_gray() +
+    ggtitle(plot_title) +
+    xlab("Date") + 
+    ylab("Price")
+  
+  ggplotly(p1)
+}
+
+#Luna price and simulated strikes YTD
+LUNA %>%
+  mutate(week = floor_date(timestamp, "week", getOption("lubridate.week.start", 5))) %>%
+  mutate(prev = if_else(is.na(lag(price, default = NA)), price, lag(price, default = NA))) %>%
+  group_by(week) %>%
+  mutate(simulated_strike = round(first(prev)*strike_multiplier*2)/2,
+         breakeven = simulated_strike / price - 1) %>%
+  ungroup() %>%
+  pivot_longer(., cols = c("price", "simulated_strike"), names_to = "type", values_to = "value") %>%
+  filter(timestamp >= as.Date("2022-01-01")) %>%
+  plot_price_vs_strike(., plot_title = "YTD price vs simulated strikes")
+
+```
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Simulated portfolio function
+simulate_portfolios <- function(DF, output = "plot", plot_title = "") {
+LUNA_RETURNS <- DF %>%
+  mutate(prev = if_else(is.na(lag(price, default = NA)), price, lag(price, default = NA))) %>%
+  mutate(week = floor_date(timestamp, "week", getOption("lubridate.week.start", 5))) %>%
+  group_by(week) %>%
+  mutate(first = first(prev)) %>%
+  ungroup() %>%
+  rowwise() %>%
+  mutate(covered_call_returns = min(c(price/first-1,strike_multiplier-1)) + average_premium) %>%
+  ungroup()
+
+#Simulated portfolios returns
+portfolios_returns <- left_join(LUNA_RETURNS, LUNA_RETURNS %>%
+              group_by(week) %>%
+              summarise(weekly_returns = last(covered_call_returns)) %>%
+              mutate(weekly_multiplier = weekly_returns + 1,
+                     lag_cum_multiplier = replace_na(lag(cumprod(weekly_multiplier),n=1), 1)) %>%
+              select(week, lag_cum_multiplier)) %>%
+  mutate(covered_call_portfolio = 100 * lag_cum_multiplier * (1+covered_call_returns),
+         hold_luna_portfolio = price/first(price) * 100) 
+
+#Plot
+portfolios_plot <- portfolios_returns %>%  pivot_longer(., cols = c("hold_luna_portfolio", "covered_call_portfolio"), names_to = "portfolio", values_to = "value") %>%
+  ggplot(., aes(x=timestamp, y = value, color = portfolio, linetype = portfolio)) +
+  geom_line() +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray()  +
+  ggtitle(plot_title) +
+    xlab("Date") + 
+    ylab("Value")
+
+plot <- ggplotly(portfolios_plot)
+
+#Summary table
+table <- portfolios_returns %>%
+  select(timestamp, week, hold_luna_portfolio,covered_call_portfolio) %>%
+  group_by(week) %>%
+  summarise(hold_luna_portfolio =last(hold_luna_portfolio), covered_call_portfolio = last(covered_call_portfolio)) %>%
+  mutate(hold_luna_returns = hold_luna_portfolio/lag(hold_luna_portfolio, n = 1, default = 100),
+         covered_call_returns = covered_call_portfolio/lag(covered_call_portfolio, n = 1, default = 100),
+         covered_call_underperformance = if_else(covered_call_returns < hold_luna_returns,1,0),
+         covered_call_average_underperformance = covered_call_underperformance *  (covered_call_returns-hold_luna_returns)) %>%
+  summarise(weeks = n(),
+            hold_luna_portfolio_returns = last(hold_luna_portfolio)/100-1,
+            covered_call_portfolio_returns = last(covered_call_portfolio)/100-1,
+            covered_call_underperformance = sum(covered_call_underperformance),
+            covered_call_average_underperformance = sum(covered_call_average_underperformance)/covered_call_underperformance,
+            breakeven_average_yield = ((1+hold_luna_portfolio_returns)/(1+covered_call_portfolio_returns))^(1/weeks)-1)  %>%
+  mutate(hold_luna_portfolio_returns = scales::percent(hold_luna_portfolio_returns), 
+         covered_call_portfolio_returns = scales::percent(covered_call_portfolio_returns), 
+         covered_call_average_underperformance = scales::percent( covered_call_average_underperformance, accuracy = 0.01), 
+         breakeven_average_yield = scales::percent(breakeven_average_yield, , accuracy = 0.01)) %>%
+  knitr::kable(., col.names = c("# Weeks",
+                                "Hold Luna Ret%",
+                                "Covered Calls Ret%",
+                                "#Covered Calls Underperformance",
+                                "Covered Calls Average Underperformance",
+                                "Average Premium for Breakeven"))
+  
+  
+#Output
+if(output == "plot") {plot} else if (output == "table") {table} else {warning("output misspecified")}
+
+}
+
+#YTD simulated portfolio plot
+LUNA %>%
+  filter(timestamp >= as.Date("2022-01-01")) %>%
+  simulate_portfolios(., "plot", "YTD Portfolios' Comparison")
+```
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+LUNA %>%
+  filter(timestamp >= as.Date("2022-01-01")) %>%
+  simulate_portfolios(., "table")
+```
+
+As we can see, only one time since the beginning of the year has LUNA's price surpassed the hypothetical strike price, and it happened this month. For that reason, the divergence between the buy-and-hold portfolio and the covered-call portfolio (THAT COLLECTS NO PREMIUMS) is quite small, mainly because the only month that it underperformed it did so by a small margin. So small the margin, that average weekly premiums of 0.54% would have sufficed to match the returns of both portfolios (real live returns were even higher).
+
+There is, however, a "rebalancing" effect in the sense that if options were sold on another day of the week, the difference in returns between portfolios would be quite different. For example, if options were sold on January 9th, the covered-call portfolio would have underperformed by 15% just on that week. 
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Rolling 7 days overperformance
+p7 <- LUNA %>%
+  mutate(ret_7d = (price/lag(price, n = 6) - 1)) %>%
+  filter(timestamp >= as.Date("2022-01-01")) %>%
+  ggplot(., aes(x=timestamp, y = ret_7d)) +
+  geom_line(color = "#8DD3C7") +
+  geom_hline(yintercept = 0.15, color = "#FFFFB3", linetype = "dashed") +
+  scale_y_continuous(labels = scales::percent) +
+  dark_theme_gray() +
+  ggtitle("LUNA's rolling 7-days returns") +
+           xlab("Date") + 
+           ylab("LUNA's rolling 7-days return percentage")
+         
+ggplotly(p7)
+
+```
+
+
+We can see that the rolling 7-day returns were above 15% in three different occasions since the beginning of the year (we are only counting as one the peaks of February 6th and 9th), a stark contrast to the one occasion of our previous chart that only considered Friday to Friday 7-day periods (and Friday to any day of the week periods). This provides evidence that rebalancing luck plays an important role on portfolio returns for that time period.
+
+Nevertheless, rebalancing "luck" should even out over longer timeframes and our yearly charts should not suffer as much from it. Therefore, we wont repeat this chart in the next section.
+
+
+### One year of data
+
+In this section, we will show the same two charts that were included in the previous but for a different time period: the last 365 days.
+
+Each plot has its own summary table.
+
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#Luna price and simulated strikes last year
+LUNA %>%
+  mutate(week = floor_date(timestamp, "week", getOption("lubridate.week.start", 5))) %>%
+  mutate(prev = if_else(is.na(lag(price, default = NA)), price, lag(price, default = NA))) %>%
+  group_by(week) %>%
+  mutate(simulated_strike = round(first(prev)*strike_multiplier*2)/2,
+         breakeven = simulated_strike / price - 1) %>%
+  ungroup() %>%
+  pivot_longer(., cols = c("price", "simulated_strike"), names_to = "type", values_to = "value") %>%
+  filter(timestamp >= Sys.Date() - 364) %>%
+  plot_price_vs_strike(., plot_title = "Last year's price vs simulated strikes")
+
+```
+
+
+
+
+
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Luna price and simulated strikes last year summary
+LUNA %>%
+  mutate(week = floor_date(timestamp, "week", getOption("lubridate.week.start", 5))) %>%
+  mutate(prev = if_else(is.na(lag(price, default = NA)), price, lag(price, default = NA))) %>%
+  group_by(week) %>%
+  mutate(simulated_strike = round(first(prev)*strike_multiplier*2)/2,
+         breakeven = simulated_strike / price - 1) %>%
+  summarise(price = last(price), simulated_strike = last(simulated_strike), weekly_breakeven = last(breakeven)) %>%
+  mutate(weekly_underperformance = if_else(weekly_breakeven < 0 , 1,0)) %>%
+  summarise(weeks = n(), underperformace = sum(weekly_underperformance)) %>%
+  knitr::kable(.,col.names = c("# Weeks",
+               "#Covered Calls Underperformance"))
+```
+
+
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+LUNA %>%
+  simulate_portfolios(., "plot", "Last Year's Portfolios' Comparison")
+```
+
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+LUNA %>%
+  simulate_portfolios(., "table")
+```
+
+
+In the longer period, the price of LUNA exceeded the hypothetical strike price in 16 out of 53 weeks. However, as we can see in the portfolio chart, the covered-calls with no premiums portfolio severely underperformed the buy-and-hold portfolio. This happened because the option strategy missed on a few big gains but always never missed out on the losses.
+
+For the covered-call strategy to match the buy-and-hold strategy over this time period, weekly premiums must have been roughly 5.12%.
+
+### The effect of premiums
+
+Up until now, we have only been able to determine quantitatively that there are real costs associated with systematic covered-call strategies that must be compensated by premiums in order to not underperform.
+
+In this section, we will compare how two different level of weekly premiums would have affected the performance of this strategy in the two time periods considered in this document.
+
+We build two covered-call portfolios that accrue different weekly premiums (the covered-call portfolio in the previous section did not accrue any premiums). The high premium portfolio earns a 2% premium with call selling and the low premium portfolio earns 0.5%. These higher number corresponds to the higher boundary of real life ranges while the lower number is in the lower 25% percentile of real premiums charged.
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#Compare premiums
+#Simulated comparative premiums portfolios function
+compare_premiums_function <- function(DF, plot_title = "", low_premium = 0.005, high_premium = 0.02) {
+ LUNA_RETURNS <- DF %>%
+    mutate(prev = if_else(is.na(lag(price, default = NA)), price, lag(price, default = NA))) %>%
+    mutate(week = floor_date(timestamp, "week", getOption("lubridate.week.start", 5))) %>%
+    group_by(week) %>%
+    mutate(first = first(prev)) %>%
+    ungroup() %>%
+    rowwise() %>%
+    mutate(covered_call_returns_low_premiums = min(c(price/first-1,strike_multiplier-1)) + low_premium,
+           covered_call_returns_high_premiums = min(c(price/first-1,strike_multiplier-1)) + high_premium) %>%
+    ungroup()
+  
+  #Simulated portfolios returns
+  portfolios_returns <- left_join(LUNA_RETURNS, LUNA_RETURNS %>%
+                                    group_by(week) %>%
+                                    summarise(weekly_returns_low_premiums = last(covered_call_returns_low_premiums),
+                                              weekly_returns_high_premiums = last(covered_call_returns_high_premiums)) %>%
+                                    mutate(weekly_multiplier_low_premiums = weekly_returns_low_premiums + 1,
+                                           lag_cum_multiplier_low_premiums = replace_na(lag(cumprod(weekly_multiplier_low_premiums),n=1), 1),
+                                           weekly_multiplier_high_premiums = weekly_returns_high_premiums + 1,
+                                           lag_cum_multiplier_high_premiums = replace_na(lag(cumprod(weekly_multiplier_high_premiums),n=1), 1)) %>%
+                                    select(week, lag_cum_multiplier_low_premiums, lag_cum_multiplier_high_premiums)) %>%
+    mutate(low_premiums_portfolio = 100 * lag_cum_multiplier_low_premiums * (1+covered_call_returns_low_premiums),
+           high_premiums_portfolio = 100 * lag_cum_multiplier_high_premiums * (1+covered_call_returns_high_premiums),
+           hold_luna_portfolio = price/first(price) * 100) 
+  
+  #Plot
+  portfolios_plot <- portfolios_returns %>%  pivot_longer(., cols = c("hold_luna_portfolio", "low_premiums_portfolio", "high_premiums_portfolio"), names_to = "portfolio", values_to = "value") %>%
+    ggplot(., aes(x=timestamp, y = value, color = portfolio, linetype = portfolio)) +
+    geom_line() +
+    scale_color_brewer(palette = "Set3") +
+    dark_theme_gray() +
+    ggtitle(plot_title) +
+    xlab("Date") + 
+    ylab("Value")
+  
+ggplotly(portfolios_plot)}
+
+LUNA %>%
+  filter(timestamp >= as.Date("2022-01-01")) %>%
+  compare_premiums_function(., plot_title = "YTD hypothetical portfolios according to premiums")
+
+```
+
+As we can see in the above chart, the high premium portfolio actually outperforms the buy-and-hold portfolio. While the low-premium portfolio almost exactly matches it. However, as stated and demonstrated above, there is a significant influence of "rebalancing luck" in this analysis. What is quite clear, is that there are notable differences between average premiums even in short timeframes.
+
+```{r fig.width=10, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+LUNA %>%
+  compare_premiums_function(., plot_title = "Past year hypothetical portfolios according to premiums")
+```
+
+When looking back for a full year, it is quite obvious that even the high-premium portfolio would have been greatly overwhelmed by the buy-and-hold strategy. However, here again we see the stark contrast between the high premium and low premium portfolios.
+
+It is quite evident that the price at which options are sold in relevant.
+
+## Conclusions
+
+Quantitative facts support the notion that covered call strategies can be very costly and provide a risk-return profile (unlimited losses, capped gains) that is not convenient for most investors.
+
+The stronger point against these kinds of strategies, that systematically selling options without regard for the price, is quantitatively difficult to prove (expensive data would be necessary) but is theoretically sound, as we exposed in this document.
+
+However, our comparison between the performance of two portfolios following the same strategy but earning different premiums should be enough to convince the reader that prices matter.
+
+To restate it: covered call strategies must consider the price of the options, since writing cheap calls will eventually lead to an important underperfomance. In other words, covered call strategies should not be systematic and price agnostic, and they must consider if the implied volatility of the option is high or low in comparison to the forecasted future volatility.
