@@ -1,0 +1,111 @@
+---
+title: "52 Pickup"
+author: "laz97"
+date: '2022-03-02'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+
+Given the Crypto-Twitter’s chatter about $52 being the new floor price for LUNA, this dashboard aims to establish if there is any basis for said claim.
+
+In the spirit of reproducibility, a public API was used and code can be accessed here[].
+
+The dashboard was built in R Markdown to take advantage of available packages in R, including ggplot2’s graphing capabilities.
+Pricing data comes from GoinGecko’s public API, and was accessed using the geckor package in R.
+
+## LUNA’s price over the past year
+
+Before establishing a time period to study the claim that \$52 is the floor price of LUNA, we decided to start by looking at a full year of price history to determine when was the first (and last) time that LUNA’s price crossed the \$52 mark for a prolonged period of time. 
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(tidyverse)
+library(tidyquant)
+library(geckor)
+library(ggplot2)
+library(plotly)
+library(RColorBrewer)
+library(ggdark)
+
+#LUNA Price History
+LUNA  <- coin_history(coin_id = c("terra-luna"),
+                        vs_currency = "usd",
+                        days = 365,
+                        interval = NULL,
+                        max_attempts = 3
+) 
+
+```
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Plot LUNA
+#Plot LUNA
+plot1 <- LUNA %>%
+  ggplot(., aes(x = timestamp, y = price, color = coin_id)) + 
+  geom_line() +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  geom_hline(yintercept = 52, color = "#FFFFB3", linetype = "dashed", size = 0.5) +
+  theme(legend.position = "none") +
+   ggtitle("LUNA Price History - 1 Year") +
+    xlab("Date") + 
+    ylab("Price")
+
+ggplotly(plot1)
+
+```
+
+As we can see in the above graph,  the first time that LUNA crossed the \$52 barrier was before mid-November, but it only stayed above it for a day. However, on December 1st it crossed the mark again and stayed above it for almost two months, marking the first sustained excursion to the above-52 territory. 
+ 
+Given this, we chose to study LUNA's price since December first in an attempt to establish if there is any basis to the claim that \$52 is the new floor price for LUNA.
+
+
+## LUNA’s price since December 1st
+
+The following plot shows LUNA's price since December 1st, conveniently marking a horizontal line at the $52 level. 
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#LUNA since december 1st plot
+plot2 <- LUNA %>%
+  filter(timestamp >= as.Date("2021-12-01")) %>%
+  ggplot(., aes(x = timestamp, y = price, color = coin_id)) + 
+  geom_line() +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  geom_hline(yintercept = 52, color = "#FFFFB3", linetype = "dashed", size = 0.5) +
+  theme(legend.position = "none") +
+  ggtitle("LUNA Price History - Since 2021-12-01") +
+  xlab("Date") + 
+  ylab("Price")
+  
+ggplotly(plot2)
+```
+
+
+The table below shows the total number of trading days in the studied period, the days when the close was above $52, and the days when the close was below.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Summary
+LUNA %>%
+  filter(timestamp >= as.Date("2021-12-01")) %>%
+  mutate(above = if_else(price >= 52, 1,0),
+         below = if_else(price >= 52, 0,1)) %>%
+  summarise(trading_days = n(), above_52 = sum(above), below_52 = sum(below)) %>%
+  knitr::kable(.,col.names = c("#Trading days",
+                               "#Days above 52",
+                                "#Days below 52"))
+
+```
+
+
+As we can see, since LUNA first crossed the $52 mark for a sustained period of time, it has only gone below briefly, by (relatively) little and very few times.
+
+This, without being strong evidence that $52 can act as a floor to LUNA's price going forward, at least provides a basis for the claim.
