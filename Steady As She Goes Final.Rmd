@@ -1,0 +1,348 @@
+---
+title: "Steady as She Goes"
+author: "laz97"
+date: '2022-03-02'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+
+A common talking point on Twitter is that LUNA is resistant to broader market downturns when compared to other leading cryptocurrencies. 
+
+We can break down this claim into two parts: 1) when compared to other cryptocurrencies, LUNA is more resistant to downturns, and 2) it is less correlated to the overall market in downturns.
+
+We study LUNA's resistance to downturns behavior, compared with other tokens, since September 1st (six full months), in order to analyze recent data while making sure that the sample is big enough to allow for robust results.
+
+As a benchmark for comparison, we include the top 7 cryptocurrencies (other than LUNA and excluding "stablecoins") by market cap according to CoinMarketCap at the date of publication of this dashboard:
+
+- Bitcoin ("bitcoin")
+- Ethereum ("ethereum")
+- BNB ("binance-coin")
+- XRP ("ripple")
+- Solana ("solana")
+- Cardano ("cardano")
+- Avax ("avalanche")
+
+We also build a market-capitalization-weighted index that is formed from the coins stated above (and LUNA). This index will be considered as the main benchmark for all quantitative calculations that require a measure of "market returns".
+
+Given the ambiguity and difficulty of defining the resistance of LUNA to broader market pressures, we propose different indicators of stability or resistance to broader market pressures and attempt to analyze them as a whole.
+
+We conclude that overall, when compared to other cryptocurrencies, LUNA is not that resistant to declines according to several different indicators. However, it does provide diversification benefits in downturn events.
+
+Data used in this dashboard is from Coingecko's public API. Also, in the spirit of reproducibility, all code used for this dashboard can be found [here]()
+
+## LUNA's price vs the benchmark and others
+
+The following chart shows the price behavior of LUNA in the studied period, compared to the benchmark index and other cryptocurrencies. Prices are normalized to 100 at the beginning of the period.
+
+As the rest of the charts in this dashboard, the following chart is interactive, and the reader can zoom in, zoom out, select specific time periods, and isolate lines by clicking and double-clicking the legend.
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(tidyverse)
+library(tidyquant)
+library(geckor)
+library(ggplot2)
+library(plotly)
+library(RColorBrewer)
+library(ggdark)
+library(tibbletime)
+library(extRemes)
+
+#Custom function
+GGplotStyleMapper <- function(DF, Variable_Column, Values, Styles, ID_Column = NA) {
+  
+  if(length(Values) > length(Styles)) {warning("More values than styles")}
+  
+  non_matching <- setdiff(Values, unique(DF[[Variable_Column]]))
+  if(length(non_matching) > 0) {warning("The following specified values do not match values in DF column:", paste(non_matching, collapse = " "))}
+  
+  #Map styles
+  mapped_styles_specified <- tibble(Value = Values, Style = Styles[1:length(Values)])
+  
+  mapped_styles_others <- tibble(Value = setdiff(unique(DF[[Variable_Column]]), Values),
+                                 Style = rep(Styles[(length(Values)+1):length(Styles)], length.out = length(setdiff(unique(DF[[Variable_Column]]), Values))))
+  
+  output <- full_join(mapped_styles_specified, mapped_styles_others, by = c("Value", "Style")) %>%
+    deframe(.)
+  
+  
+  #Not tested
+  if(!is.na(ID_Column)) {
+    if(nrow(distinct(DF, c(ID_Column))) != nrow(distinct(DF, c(ID_Column, Variable_Column)))) {
+      warning("ID column values do not match criteria of having one match each on the Variable column")
+    }
+    
+    output <- distinct(DF, c(ID_Column, Variable_Column)) %>%
+      select(ID = 1, Value = 2) %>%
+      left_join(., output, by = "Value") %>%
+      select(., - Value) %>%
+      deframe(.)
+  }
+  
+  output
+  
+}
+rollin_max_30 <- rollify(max, window = 30)
+
+#Get LUNA prices
+CRYPTO  <- coin_history(coin_id = c("terra-luna","bitcoin", "ethereum", "oec-binance-coin",  "ripple","solana", "cardano","avalanche-2"),
+  vs_currency = "usd",
+  days = 365,
+  interval = NULL,
+  max_attempts = 3
+)  %>% mutate(timestamp = floor_date(timestamp, "day"),
+                 coin_id = str_replace_all(coin_id, "avalanche-2", "avalanche"),
+              coin_id = str_replace_all(coin_id, "oec-binance-coin", "binance-coin"),
+              coin_id = str_replace_all(coin_id, "terra-luna", "luna")) %>%
+  filter(timestamp >= as.Date("2022-02-28") - 180, timestamp <= as.Date("2022-02-28"))
+
+
+#Create MC_INDEX
+MC_INDEX <- CRYPTO %>%
+  group_by(timestamp) %>%
+  summarise(market_cap = sum(market_cap)) %>%
+  mutate(coin_id = "index",
+         vs_currency = "usd",
+         price = market_cap / first(market_cap) * 100,
+         total_volume = NA,
+         .before = market_cap)
+
+#Comparison dataset (normalized) and with drawdowns
+CRYPTO_NORMALIZED <- bind_rows(CRYPTO, MC_INDEX) %>%
+  filter(timestamp >= as.Date("2022-02-28") - 180, timestamp <= as.Date("2022-02-28")) %>%
+  group_by(coin_id) %>%
+  mutate(price = price/first(price)*100,
+         cum_max = cummax(price),
+         drawdown = price/cum_max -1)
+```
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Returns comparison
+p0 <- CRYPTO_NORMALIZED %>%
+  ggplot(., aes(x = timestamp, y = price, color = coin_id, size = coin_id, linetype = coin_id)) + 
+  geom_line() +
+  dark_theme_gray() +
+  scale_color_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), brewer.pal(3, "Set3"))) +
+  scale_size_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,1,0.3))) +
+  scale_linetype_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,2,1)))  +
+  ggtitle("Selected coins since 2021-09-01") +
+  xlab("Date") + 
+  ylab("Returns")
+ggplotly(p0)
+```
+
+
+The two most notable things from this chart are that LUNA was the best performing token in this period, slightly above AVAX, and that LUNA reached its maximum high after the other tokens, implying that it continued to go up while others were going down. This latter fact has an effect on the next chart on this dashboard.
+
+
+## Downturn resistance vs downturn diversification
+
+The characteristics and value of any particular asset to an investor can vary depending on whether he evaluates the asset as a standalone investment or as a part of a portfolio.
+
+For example, an asset that is extremely volatile and that has significant downside movements might still help an investor reduce overall risk if it is uncorrelated or negatively correlated to the rest of his portfolio.
+
+In this sense, we want to study LUNA's behavior both in terms of its standalone characteristics and its contributions to a broader crypto portfolio.
+
+So while assessing if LUNA is more resistant than other leading cryptocurrencies to broader market downturns, we would like to know both how resistant is LUNA to downturns by itself and how resistant is LUNA to broader market downturns (uncorrelated, good for diversification).
+
+Distinguishing between these two concepts, we propose the following quantitative measures of LUNA's downturn resistance:
+
+***Standalone downturn resistance:***
+
+
+- Downside deviation: similar to the standard deviation, but only takes into account the subset of periods with negative returns. It is calculated on returns, not prices.
+- Value at Risk (VaR): is a statistic that quantifies the extent of possible financial losses of an asset given a probability quantile and in a given time period. In our case, it is calculated daily and with a 95% quantile. The stated number can be interpreted as the possible loss with a 5% probability. For example, a 7% VaR should be interpreted as a 5% probability of the relevant asset losing at least 7% on each day. This particular metric is calculated using a standard Gaussian distribution.
+- Cornish-Fisher Value at Risk: similar to the regular VaR, it incorporates skewness and kurtosis into the distribution function, giving more accurate results. It has the same interpretation.
+- Maximum Drawdown
+
+
+***As the downturn resistance is related to the portfolio:***
+
+
+- Beta: from the famous CAPM model, Beta is a measure of the systematic risk of an asset compared to the market as a whole. In simpler terms, it measures how an asset responds to moves in the broader market. If greater than 1, it implies that the security has more "systematic" risk than the market. If less than 1, it implies the opposite. Beta = 1, implies the same degree of systematic risk (neither add nor substracts risk).
+- Beta-: the same as Beta, but only considers periods where the market experienced negative returns. It may help us determine how a LUNA behaves in negative markets and how it responds to them, compared to the other "benchmark" assets.
+- Beta+: the same as Beta, but only considers periods where the market experienced positive returns. 
+- Correlation: correlation between an asset's returns and the main benchmark's (market-cap-weighted index in our case) returns.
+- Correlation-: the same, but only considers periods where the market experienced negative returns.
+- Correlation+: the same, but only considers periods where the market experienced negative returns.
+- Tail dependence: the most complex quantitative measure in this document but also the most interesting to determine LUNA's resistance to extreme movements in the market. It measures how dependent a variable is on another variable in the extremes of the probability distribution, using a Copula distribution. We use the "chibar" coefficient defined in Reiss and Thomas (2007), which ranges between 0 and 1 and for our purposes can be interpreted as follows: the closer to 0, the lower the dependence (in the tails at least) and the closer to 1, the higher the dependence.
+
+We also propose three visualizations that might help to determine how LUNA's standalone downturn resistance compares to the benchmark crypto assets:
+
+- An absolute drawdown chart, measured as the relative difference between the current price and the cumulative maximum price since the start of the period.
+- A rolling 30 days drawdown chart, measured as the relative difference between the current price and the maximum price in the past 30 days.
+- Monthly maximum drawdown chart, measured as the maximum relative difference between any current price and that month's cumulative maximum price.
+
+
+## LUNA, drawdowns, and risk
+
+The following time-series charts show absolute drawdowns, rolling 30-day drawdowns, and the maximum drawdown at each month. 
+
+The first chart is the most intuitive, as comparing period drawdowns is the obvious place to start an analysis of downturn resistance. However, there is a key issue with that visualization: not all assets reach their period high at the same time, so some drawdowns that seem large are actually the result of slow, steady losses while some drawdowns that seem small are actually the result of a sharp, quick loss. In other words, the first chart misses some components of volatility.
+
+The second and third charts in some ways fix this issue. They allow comparing shorter period losses, picking up the volatility. The third chart in particular serves almost as a monthly summary of how sharp each asset's maximum losses were.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+p1 <- CRYPTO_NORMALIZED %>%
+  ggplot(., aes(x = timestamp, y = drawdown, color = coin_id, size = coin_id, linetype = coin_id)) + 
+  geom_line() +
+  dark_theme_gray() +
+  scale_color_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), brewer.pal(3, "Set3"))) +
+  scale_size_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,1,0.3))) +
+  scale_linetype_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,2,1))) +
+  ggtitle("Coins drawdowns since 2021-09-01") +
+  xlab("Date") + 
+  ylab("Drawdown")
+
+ggplotly(p1)
+```
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Rolling 30-day drawdown
+p11 <- CRYPTO_NORMALIZED %>%
+  group_by(coin_id) %>%
+  mutate(rolling_max = if_else(is.na(rollin_max_30(price)), cummax(price), rollin_max_30(price)),
+         rolling_drawdown = price/rolling_max - 1) %>%
+  ggplot(., aes(x = timestamp, y = rolling_drawdown, color = coin_id, size = coin_id, linetype = coin_id)) + 
+  geom_line() +
+  dark_theme_gray() +
+  scale_color_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), brewer.pal(3, "Set3"))) +
+  scale_size_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,1,0.3))) +
+  scale_linetype_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,2,1))) +
+  ggtitle("Coins 30-day rolling drawdons since 2021-09-01") +
+  xlab("Date") + 
+  ylab("30-day rolling drawdown")
+  
+ggplotly(p11)
+```
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Monthly maximum drawdowns
+p2 <- CRYPTO_NORMALIZED %>%
+  mutate(month_date = floor_date(timestamp, "month")) %>% 
+  group_by(coin_id, month_date) %>%
+  mutate(month_cum_max = cummax(price),
+         month_drawdown = price/month_cum_max -1,
+         month_max_drawdown = min(month_drawdown)) %>%
+  ungroup() %>%
+  ggplot(., aes(x = timestamp, y = month_max_drawdown, color = coin_id, size = coin_id, linetype = coin_id)) + 
+  geom_line() +
+  dark_theme_gray() +
+  scale_color_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), brewer.pal(3, "Set3"))) +
+  scale_size_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,1,0.3))) +
+  scale_linetype_manual("coin_id", values = GGplotStyleMapper(CRYPTO_NORMALIZED, "coin_id", c("luna", "index"), c(1,2,1))) +
+  ggtitle("Coins monthly maximum drawdown since 2021-09-01") +
+  xlab("Date") + 
+  ylab("Monthly maximum drawdown")
+  
+ggplotly(p2)
+```
+
+
+From the first chart, one might get the impression that LUNA's experienced milder drawdowns during the past 6 months than the index and most other assets. Although true, the second and third charts clearly show that LUNA tended to be within the assets with the sharper short-term drops.
+
+The table below shows more or less the same thing. LUNA, which continued its bull run the longest, had about a median maximum drawdown. It should be noted, however, that this maximum drawdown came in a shorter time frame.
+
+However, when we consider the measures that take into account greater data frequency, LUNA is across the board one of the assets with the higher dropdown risk profile (worst in Downside Deviation and VAR, second-worst in Modified VaR).
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Prepare for perfromance analytics
+CRYPTO_RETURNS <- CRYPTO %>%
+  bind_rows(CRYPTO, MC_INDEX) %>%
+  group_by(coin_id) %>%
+  tq_transmute(select     = price, 
+               mutate_fun = periodReturn, 
+               period     = "daily", 
+               col_rename = "Ra") %>%
+  left_join(., CRYPTO %>%
+              group_by(timestamp) %>%
+              summarise(market_cap = sum(market_cap)) %>%
+              mutate(coin_id = "index",
+                     vs_currency = "usd",
+                     price = market_cap / first(market_cap) * 100,
+                     total_volume = NA,
+                     .before = market_cap) %>%
+              tq_transmute(select     = price, 
+                           mutate_fun = periodReturn, 
+                           period     = "daily", 
+                           col_rename = "Rb")) %>%
+  group_by(coin_id)
+
+
+#Max drawdown and semideviation
+CRYPTO_RETURNS %>%
+  tq_performance(Ra = Ra, 
+                 Rb = Rb, 
+                 performance_fun = table.DownsideRisk) %>%
+  select(c("DownsideDeviation(0%)", "HistoricalVaR(95%)","ModifiedVaR(95%)", "MaximumDrawdown"))  %>%
+  mutate_if(is.numeric, format, digits=2) %>%
+  knitr::kable(.,col.names = c("Coin",
+                               "Downside Deviation",
+                               "VaR (95%)",
+                               "Modified (Cornish-Fisher) VaR (95%)",
+                               "Maximum Drawdown"))
+
+```
+
+
+So if don't let ourselves be fooled by the maximum drawdown figures, which are greatly influenced by the longevity of the drawdown cycle, we can observe that LUNA consistently underperforms the benchmark index and the rest of the considered assets in terms of dropdown risk.
+
+## LUNA and downturn diversification in crypto portfolios
+
+The second part of our analysis deals with how correlated is LUNA to market downturns, compared to other assets.
+
+The following table shows different metrics that allow us to make said comparisons. Each of these metrics uses the created index as a benchmark.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Beta, +Beta, -Beta and correlations and tail dependance
+CRYPTO_RETURNS %>%
+  tq_performance(Ra = Ra, 
+                 Rb = Rb, 
+                 performance_fun = table.CAPM) %>%
+  select(c("Beta", "Beta-","Beta+", "Correlation")) %>%
+  rename("Corr" := "Correlation") %>%
+  left_join(.,
+            CRYPTO_RETURNS %>%
+              filter(Rb < 0) %>%
+              tq_performance(Ra = Ra, 
+                             Rb = Rb, 
+                             performance_fun = table.Correlation) %>%
+              select(c("coin_id", "to.Rb")) %>%
+              rename("Corr-" := "to.Rb") %>%
+              left_join(., CRYPTO_RETURNS %>%
+                          filter(Rb >= 0) %>%
+                          tq_performance(Ra = Ra, 
+                                         Rb = Rb, 
+                                         performance_fun = table.Correlation) %>%
+                          select(c("coin_id", "to.Rb")) %>%
+                          rename("Corr+" := "to.Rb"), by = "coin_id"), by = "coin_id") %>%
+  left_join(CRYPTO_RETURNS %>%
+              group_by(coin_id) %>%
+              summarise('Tail Dependance' = taildep(Ra, Rb, .8, type = "chi", na.rm = TRUE)), by ="coin_id") %>%
+  mutate_if(is.numeric, format, digits=2)  %>%
+  knitr::kable(.)
+
+```
+
+At first, we can observe that LUNA does not really stand out in regards to its Beta measures when compared to the other assets. Whoever, Beta by nature losses some strength when assets have different correlations to the market (it is a measure of systematic risk that assumes perfect correlation). So we might be more interested in correlations and particularly in tail dependence. 
+
+Regarding correlations, LUNA is the less correlated asset to the index almost across the board, and more sharply when considering Corr-, the more relevant of correlations for our objectives. 
+
+While when we talk about tail dependence, LUNA is the second less dependent variable, trailing slightly behind avalanche.
+
+So the evidence seems to show that LUNA won't follow the market down as much as other leading cryptocurrencies, and in that sense, it is more resistant to broader market downturns.
+
+## Conclusions
+
+In this dashboard, we argued that the question of LUNA's resistance to downturns can be broken down into two different parts: how resistance it is to sharp dropdowns by itself and how resistant it is to market dropdowns.
+
+We used several different visualizations, where applicable, and quantitative metrics to answer each of these parts.
+
+Our conclusion is that although LUNA is particularly susceptible to sharp dropdowns compared to other leading cryptocurrencies, it is less correlated to the market than the rest of said cryptocurrencies, providing diversification benefits for holders.
