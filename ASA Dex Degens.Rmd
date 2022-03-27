@@ -1,0 +1,164 @@
+---
+title: "ASA Dex Degens"
+author: "laz97"
+date: '2022-03-24'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Intro
+On this dashboard, we study how Algorand wallets behaved on DEXs.
+
+First, we show the distribution of the number of swaps by wallet since the beginning of the year.
+
+Then, we show the distribution of the number of assets that were used in swaps by  wallets in the same period.
+
+We do so using Flipsidecripto’s algorand.swaps table taking into consideration only swaps with positive swap_from_amounts. The query used to extract the data can be found [here](https://app.flipsidecrypto.com/velocity/queries/9b4d3d24-10e9-4fec-94a2-1c9e4951b0fe)
+
+The rest of the analysis was done in R and the code can be found [here]() for reproducibility purposes.
+
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, jsonlite, forcats, scales, plotly, RColorBrewer, ggdark,  ggiraph)
+
+#Custom function
+GGplotStyleMapper <- function(DF, Variable_Column, Values, Styles, ID_Column = NA) {
+  
+  if(length(Values) > length(Styles)) {warning("More values than styles")}
+  
+  non_matching <- setdiff(Values, unique(DF[[Variable_Column]]))
+  if(length(non_matching) > 0) {warning("The following specified values do not match values in DF column:", paste(non_matching, collapse = " "))}
+  
+  #Map styles
+  mapped_styles_specified <- tibble(Value = Values, Style = Styles[1:length(Values)])
+  
+  mapped_styles_others <- tibble(Value = setdiff(unique(DF[[Variable_Column]]), Values),
+                                 Style = rep(Styles[(length(Values)+1):length(Styles)], length.out = length(setdiff(unique(DF[[Variable_Column]]), Values))))
+  
+  output <- full_join(mapped_styles_specified, mapped_styles_others, by = c("Value", "Style")) %>%
+    deframe(.)
+  
+  
+  #Not tested
+  if(!is.na(ID_Column)) {
+    if(nrow(distinct(DF, c(ID_Column))) != nrow(distinct(DF, c(ID_Column, Variable_Column)))) {
+      warning("ID column values do not match criteria of having one match each on the Variable column")
+    }
+    
+    output <- distinct(DF, c(ID_Column, Variable_Column)) %>%
+      select(ID = 1, Value = 2) %>%
+      left_join(., output, by = "Value") %>%
+      select(., - Value) %>%
+      deframe(.)
+  }
+  
+  output
+  
+}
+
+#Import ASA DEX Degens
+dex_degens <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/9b4d3d24-10e9-4fec-94a2-1c9e4951b0fe/data/latest") %>% 
+  as_tibble(.) %>%
+  select(SWAPPER, SWAPS, SWAPPED_FOR)
+
+```
+
+## Distribution of the number of swaps by wallet
+
+Below, we show both the frequency distribution and an  “inverse” cumulative distribution of the number of swaps each wallet performed since the beginning of the year.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Frequency
+p0 <- ggplot(dex_degens, aes(x=SWAPS)) + 
+  geom_histogram_interactive(bins=18, aes(y = stat(count) / sum(count),tooltip = round(stat(count) / sum(count), digits = 2)), color = RColorBrewer::brewer.pal(3,"Set3")[[1]] ) +
+  scale_x_continuous(trans = "log10", labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Frequency distribution wallets' swaps") +
+  xlab("Wallets' swaps count") + 
+  ylab("Frequency")
+  
+girafe(ggobj = p0)  
+```
+  
+.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Cumulative
+p1 <- dex_degens %>%
+  mutate(PROB = cume_dist(SWAPS)) %>%
+  arrange(SWAPS) %>%
+  ggplot(., aes(x=PROB, y= SWAPS)) + 
+  geom_step(color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_y_log10(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Inverse cumulative probability wallet's swap count") +
+  xlab("Cumulative probability") + 
+  ylab("Swaps count")
+
+ggplotly(p1)
+
+
+```
+
+As we can see, up to 30% of the wallets only performed one swap in this period, while slightly more than half performed less than 3 swaps. 
+
+Only about 20% of wallets performed more than 13 swaps, while the top 10% performed more than 35.
+
+On the more extreme side of the distribution, the top 1% of wallets performed more than 334 swaps while the top 0.1% performed more than 2.226 swaps.
+
+The top wallet made more than 300.000 swaps in this period.
+
+
+## Distribution of the number of swapped-for assets by wallet
+
+Below, we show both the frequency distribution and an  “inverse” cumulative distribution of the number of assets swapped for others that each wallet performed since the beginning of the year.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Assets swapped by wallet
+#Frequency
+p2 <- ggplot(dex_degens, aes(x=SWAPPED_FOR)) + 
+  geom_histogram_interactive(aes(y = stat(count) / sum(count), tooltip = round(stat(count) / sum(count), digits = 2)), bins = 13, color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Frequency distribution wallets' swappped-for ASAs") +
+  xlab("Wallets' swapped for ASAs") + 
+  ylab("Frequency")
+girafe(ggobj = p2) 
+```
+  
+.
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Cumulative
+p3 <- dex_degens %>%
+  mutate(PROB = cume_dist(SWAPPED_FOR)) %>%
+  arrange(SWAPPED_FOR) %>%
+  ggplot(., aes(x=PROB, y= SWAPPED_FOR)) + 
+  geom_step(color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_y_log10(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Inverse cumulative probability wallet's swappped-for ASAs") +
+  xlab("Cumulative probability") + 
+  ylab("Swappped-for ASAs")
+
+ggplotly(p3)
+```
+
+As we can see, more than  45% of the wallets only swapped 1 asset since the beginning of the period, while slightly more than two-thirds used only 2 assets. 
+
+Only about 20% of wallets used more than 4 assets, while the top 10% swapped 9 or more.
+
+On the more extreme side of the distribution, the top 1% of wallets swapped more than 49 assets while the top 0.1% swapped more than 160.
+
+The top wallet swapped 363 ASAs in this period.
+
