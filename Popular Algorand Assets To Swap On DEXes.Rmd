@@ -1,0 +1,176 @@
+---
+title: "ASA Dex Degens"
+author: "laz97"
+date: '2022-03-24'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Intro
+
+In this dashboard, we study the most popular assets to swap to in Algorand’s various DEXs.
+
+First, we show the 10 most popular assets and the total number of times they were swapped to since the beginning of the year on all DEXs.
+
+Then, we segregate the most popular assets on each DEX and compare them.
+
+We do so using Flipsidecripto’s algorand.swaps table taking into consideration only swaps with positive swap_from_amounts. The queries used to extract the data can be found [here](https://api.flipsidecrypto.com/api/v2/queries/b4bd85dd-ece8-4aac-aa21-7963e6f25ddf/data/latest) and [here](https://api.flipsidecrypto.com/api/v2/queries/94f7b61b-1c6c-4e54-ad13-e0c62241699a/data/latest).
+
+The rest of the analysis was done in R and the code can be found [here]() for reproducibility purposes.
+
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, jsonlite, forcats, scales, plotly, RColorBrewer, ggdark)
+
+#Custom function
+GGplotStyleMapper <- function(DF, Variable_Column, Values, Styles, ID_Column = NA) {
+  
+  if(length(Values) > length(Styles)) {warning("More values than styles")}
+  
+  non_matching <- setdiff(Values, unique(DF[[Variable_Column]]))
+  if(length(non_matching) > 0) {warning("The following specified values do not match values in DF column:", paste(non_matching, collapse = " "))}
+  
+  #Map styles
+  mapped_styles_specified <- tibble(Value = Values, Style = Styles[1:length(Values)])
+  
+  mapped_styles_others <- tibble(Value = setdiff(unique(DF[[Variable_Column]]), Values),
+                                 Style = rep(Styles[(length(Values)+1):length(Styles)], length.out = length(setdiff(unique(DF[[Variable_Column]]), Values))))
+  
+  output <- full_join(mapped_styles_specified, mapped_styles_others, by = c("Value", "Style")) %>%
+    deframe(.)
+  
+  
+  #Not tested
+  if(!is.na(ID_Column)) {
+    if(nrow(distinct(DF, c(ID_Column))) != nrow(distinct(DF, c(ID_Column, Variable_Column)))) {
+      warning("ID column values do not match criteria of having one match each on the Variable column")
+    }
+    
+    output <- distinct(DF, c(ID_Column, Variable_Column)) %>%
+      select(ID = 1, Value = 2) %>%
+      left_join(., output, by = "Value") %>%
+      select(., - Value) %>%
+      deframe(.)
+  }
+  
+  output
+  
+}
+
+#Import assets to swap to
+swap_to <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/b4bd85dd-ece8-4aac-aa21-7963e6f25ddf/data/latest") %>% 
+  as_tibble(.) %>%
+  select(SWAP_TO_ASSET_ID, ASSET_NAME, SWAPS, RANK)
+
+
+
+#Assets to swap to by dex
+swap_to_dex <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/94f7b61b-1c6c-4e54-ad13-e0c62241699a/data/latest") %>% 
+  as_tibble(.) %>%
+  select(SWAP_PROGRAM, SWAP_TO_ASSET_ID, ASSET_NAME, SWAPS, RANK)
+
+```
+
+## Top 10 assets to swap to
+
+Below we show a table with the top 10 ASAs to swap to in Algorand since the start of the year and a chart with the swap count of each.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Top 10 assets to swap to table
+swap_to %>%
+  filter(RANK <= 10) %>%
+  knitr::kable(.)
+
+```
+
+Unsurprisingly, the most popular asset is ALGO, followed not so closely by Yieldly and USDC. The next 7 assets had significantly fewer swaps and were swapped-to a similar number of times compared to each other.
+
+## Top 10 assets to swap to by DEX
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Top 10 assets to swap to chart
+p0 <- swap_to %>%
+  filter(RANK <= 10) %>%
+  mutate(ASSET_NAME = fct_reorder(ASSET_NAME, SWAPS, .desc = TRUE)) %>%
+  ggplot(aes(x= ASSET_NAME, y = SWAPS)) +
+  geom_col(aes(fill = ASSET_NAME)) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Top 10 swapped-to assets") +
+  xlab("Asset") + 
+  ylab("Swapped-to times")
+
+ggplotly(p0)
+```
+  
+## Top 10 assets to swap to by DEX
+
+In this section, we compare the most popular ASAs to swap to in each different DEX.
+ 
+Below, we show a table with the 10 most popular assets to swap to by DEX (ranked) and a chart of the number of times each ASA was swapped-to for each one.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Taable
+swap_to_dex %>%
+  filter(RANK <= 10) %>%
+  select(RANK, SWAP_PROGRAM, ASSET_NAME) %>%
+  pivot_wider(names_from = SWAP_PROGRAM, values_from = ASSET_NAME) %>%
+  knitr::kable(., longtable = TRUE)
+
+```
+
+
+
+```{r fig.width=9, fig.height=9, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Chart function
+ChartByDex <-  function(dex = "tinyman") {
+  plot<- swap_to_dex %>%
+  filter(RANK <= 10 & SWAP_PROGRAM == dex) %>%
+  mutate(ASSET_NAME = fct_reorder(ASSET_NAME, SWAPS, .desc = TRUE)) %>%
+  ggplot(aes(x= ASSET_NAME, y = SWAPS)) +
+  geom_col(aes(fill = ASSET_NAME)) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle(dex) +
+  xlab("Asset") + 
+  ylab("Swapped-to times")
+  
+  ggplotly(plot) %>%
+    hide_legend() %>%
+    add_annotations(
+      text = dex,
+      x = 0.5,
+      y = 1,
+      yref = "paper",
+      xref = "paper",
+      xanchor = "middle",
+      yanchor = "top",
+      showarrow = FALSE,
+      font = list(size = 15)
+    )}
+
+dexs <- swap_to_dex %>%
+  distinct(SWAP_PROGRAM) %>%
+  pull()
+
+
+top10_by_dex <- lapply(setNames(dexs, dexs), ChartByDex)
+
+subplot(top10_by_dex[["algofi"]], top10_by_dex[["pactfi"]],top10_by_dex[["tinyman"]], top10_by_dex[["wagmiswap"]], nrows = 2) %>%
+  layout(title = "Top 10 swapped-to assets - by DEX")
+
+```
+
+As we can observe, ALGO was the top ASA in three out of the four DEXs. Surprisingly, ALGO was not even among the top 10 in algofi. 
+
+Another remarkable fact out of this table is that wagmiswap only has three possible assets to swap to (which checks out according to their website).
+
+Finally, Yieldly, USDC and STBL were constants on all three other DEXs.
+
