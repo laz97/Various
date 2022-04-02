@@ -1,0 +1,528 @@
+---
+title: "Katana Covered Call Vault Popularity"
+author: "laz97"
+date: '2022-03-30'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+
+Katana is a “yield generation protocol” that offers “a suite of investment products across the risk spectrum, enabling users to passively access the best yield-generating opportunities on Solana”. Among those products, the most popular ones are “covered call vaults”. Of those vaults,  five different ones have a TVL of over $1,000,000: the SOL covered call vault, the mSOL covered call vault, the BTC covered call vault,the  ETH covered call vault and the LUNA covered call vault.
+
+In this document, we develop a methodology to identify deposits and withdrawals into each vault. Using these data, we:
+
+- Calculated the historical amount of deposits and withdrawals into each vault, as well as its cumulative deposits.
+- Analyzed the changes in popularity of each vault since the beginning of February.
+- Analyzed the distribution of the number of vaults that each user deposited into.
+- Analyzed the crossover between different vaults, using definitions that give way to different interpretations.
+
+Data of deposits and withdrawals into vaults was extracted from Flipsidecryptos solana.fact_events table while price data comes from Coingecko’s public API key and was accessed with the *geckor* package in R.
+
+In the spirit of reproducibility, we share the [deposits and withdrawal query](https://app.flipsidecrypto.com/velocity/queries/a466524c-2821-4b24-ab90-c512e208432e) and the [R code underlying this document]().
+
+
+## About Katana
+Katana is a “yield generation protocol” that offers [“a suite of investment products across the risk spectrum, enabling users to passively access the best yield-generating opportunities on Solana”](https://docs.katana.so/welcome/what-is-katana).
+
+It aims to allow everyone to get exposure to relatively complex strategies by participating in “vaults” that systematically run the strategies. These strategies, unlike many yield farming and other liquidity-based investments, are based on derivatives (options) products of the most popular cryptocurrencies on the market.
+
+The two main strategies that Katana deploys right now are covered calls and put selling, the former by being by far the most popular of the two and the focus of this analysis.
+
+Covered call strategies consist in buying an asset and selling an out-of-the-money call on such an asset. With this strategy, potential gains are capped since the asset’ returns in excess of the strike price are offset by the option´s losses. On the other hand, losses are potentially unlimited since the asset can go to zero.
+
+Covered call vaults provide systematic ways of getting exposure to such a strategy. For a more in-depth dive into their potential and their problems, we invite the reader to read our analysis of the subject [here](https://rpubs.com/laz97/killer-crossover-terra-solana-bounty).
+
+As of this moment, five different covered call vaults in Katana have a TVL of over $1,000,000: SOL covered call vault, mSOL covered call vault, BTC covered call vault, ETH covered call vault and LUNA covered call vault.
+
+
+## Methodology
+The first step, and the one that required blockchain data, to perform the analysis on this document was identifying both vault deposits and withdrawals and getting the relevant information from each.
+
+Using Flipsidecrypto’s solana.fact_events table, we were able to do so through the following procedures:
+
+**Deposits:** to identify deposits to the 5 vaults of interest, the following rules were applied:
+
+- Only events (inside transactions) for which the main Program ID in the instruction was the [Katana program](https://explorer.solana.com/address/1349iiGjWC7ZTbu6otFmJwztms122jEEnShKgpVnNewy) were considered.
+- Of those events, the ones for which the first inner instruction was not of type “transfer” were discarded.
+- The remaining events were considered to be a deposit to one vault if the first instruction account matched that vault’s account and the seventh account matched the vault’s token mint.
+
+**Withdrawals:** to identify withdrawals from  the 5 vaults of interest, the following rules were applied:
+
+- Only events (inside transactions) for which the main Program ID in the instruction was the [Katana program](https://explorer.solana.com/address/1349iiGjWC7ZTbu6otFmJwztms122jEEnShKgpVnNewy) were considered.
+- Of those events, the ones for which the first inner instruction was not of type “burnr” and the second of type “transfer”  were discarded.
+- The remaining events were considered to be a withdrawal from one vault if the first instruction account matched that vault’s account.
+
+**Vaults accounts and mints:** below, we summarise the accounts corresponding to each vault and the mint of the token the vault is based on.
+
+
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, geckor, tidyquant, data.table, igraph, tidygraph, ggraph, visNetwork, networkD3, RColorBrewer, ggdark, plotly, scales, reactable)
+
+
+
+#Functions
+cum_n_distinct <- function(x, na.include = TRUE){
+  # Given a vector x, returns a corresponding vector y
+  # where the ith element of y gives the number of unique
+  # elements observed up to and including index i
+  # if na.include = TRUE (default) NA is counted as an 
+  # additional unique element, otherwise it's essentially ignored
+  
+  temp <- data.table(x, idx = seq_along(x))
+  firsts <- temp[temp[, .I[1L], by = x]$V1]
+  if(na.include == FALSE) firsts <- firsts[!is.na(x)]
+  y <- rep(0, times = length(x))
+  y[firsts$idx] <- 1
+  y <- cumsum(y)
+  
+  return(y)
+}
+
+#Import deposits and withdrawals
+KATANA_EVENTS <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/a466524c-2821-4b24-ab90-c512e208432e/data/latest") %>% 
+  as_tibble(.) %>%
+  mutate(BLOCK_TIMESTAMP = as.POSIXct(BLOCK_TIMESTAMP, tz = "UTC")) %>%
+#  filter(BLOCK_TIMESTAMP >= as.Date("2022-02-01")) %>%
+  janitor::clean_names(., case = "upper_camel", abbreviations = c("ID"))
+
+#Token identifiers
+TOKENS <- data.frame (CoinID  = c("solana", "msol", "bitcoin","ethereum","terra-luna"),
+            Token = c("SOL", "mSOL", "BTC","ETH","LUNA"))
+
+
+#Import price series
+RATES <- coin_history(
+  coin_id = pull(TOKENS, CoinID), 
+  vs_currency = "usd",
+  days = 120, 
+  interval = "daily") %>%
+  janitor::clean_names(., case = "upper_camel", abbreviations = c("ID")) %>%
+  mutate(Timestamp = if_else(Timestamp <= Sys.Date(), Timestamp - 1, Timestamp),
+         Date = floor_date(Timestamp, "day")) %>%
+  left_join(., TOKENS, by = "CoinID")
+
+
+```
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#Vault associated account table
+data.frame(Address  = c("EfN1NMcv3nBRANNP3JJNErwk5B6sDzAephivYpnJJAnD", "DkguYGWhRE8qJ9voWNYZ8dJkGYr8ACUR8KXqDAyHpGx2", "8dENNXaNmuEFNkHRwzAyqMtzqe8TmbnrCMtoJdRAp3oh","HxqxMsf6SMFCZXZFinZMTdxQxVG3Tgv5ECz9zXYmxMAC","7d3eTAxqfX9USUv7mFpvwoNnMswHVyNC2cYzWAUEZ9cT"),
+            Token = c("So11111111111111111111111111111111111111112", "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", "2FPyTwcZLUg1MDrwsyoP4D6s1tM7hAkHYRjkNb5w6Pxk", "F6v4wfAdJB8D8p77bMXZgYt8TDKsYxLYxH5AFhUkYx9W"),
+            Vault = c("SOL Covered Call", "mSOL Covered Call", "BTC Covered Call","ETH Covered Call","LUNA Covered Call")) %>%
+  reactable(.)
+  #knitr::kable(.)
+
+```
+
+*The reader can look up more information on these accounts at [Solana’s explorer](https://explorer.solana.com/).*
+
+All succesful deposit and withdrawals events since the beginning of Katana were queried and can be accessed [here](https://app.flipsidecrypto.com/velocity/queries/a466524c-2821-4b24-ab90-c512e208432e).
+
+
+## Deposits, withdrawals, and vaults’ popularity
+The first part of the current analysis consists on identifying the deposits and withdrawals rate during February and the vaults that seem to have gained the most in popularity. For the latter, we decided to include an additional metric: new depositors.
+
+### Deposits and withdrawals
+To start this analysis, we started by making a chart of historical (weekly with weeks starting at Fridays, as in the vaults locking periods) cumulative deposits (in USD for comparison’s sake) into each of the vaults. In order to visually determine if cumulative deposits meaningfully changed in February, we also plotted a “benchmark” dotted line that matches cumulative deposits at the start of the first weekly period of February (the period started on January 28th) and stays at that level for the whole period.
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Cumulative deposits and daily net deposits
+KATANA_DEPOSITS <- KATANA_EVENTS %>%
+  mutate(Date = floor_date(BlockTimestamp, "day")) %>%
+  group_by(Date, Type, Vault) %>%
+  summarise(Events = n(),
+            Amount = sum(Amount), .groups = "drop") %>%
+  left_join(., RATES, by = c("Vault" = "Token", "Date" = "Date")) %>%
+  arrange(Date) %>%
+  group_by(Type, Vault) %>%
+  fill(., CoinID, Price) %>%
+  ungroup() %>%
+  mutate(AmountUSD = Amount * Price) %>%
+  group_by(Date, Type, Vault) %>%
+  summarise(Amount = sum(Amount), 
+            AmountUSD = sum(AmountUSD),.groups = "drop") %>%
+  mutate(NetAmount = if_else(Type == "withdrawal", - Amount, Amount),
+         NetAmountUSD = if_else(Type == "withdrawal", - AmountUSD, AmountUSD),
+         Week = floor_date(Date, "week", week_start = getOption("lubridate.week.start", 5))) %>%
+  group_by(Week, Vault) %>%
+  summarise(NetDeposits = sum(NetAmount),
+            NetDepositsUSD = sum(NetAmountUSD), .groups = "drop") %>%
+  group_by(Vault) %>%
+  mutate(DepositsToDate = cumsum(NetDeposits),
+         DepositsUSDToDate = cumsum(NetDepositsUSD))
+
+p1 <- KATANA_DEPOSITS %>%
+  arrange(Week) %>%
+  select(Week, Vault, DepositsUSDToDate) %>%
+  group_by(Vault) %>%
+  mutate(Benchmark = ifelse(Week == as.Date("2022-01-28"), DepositsUSDToDate,NA)) %>%
+  rename(Value = DepositsUSDToDate) %>%
+  group_by(Vault) %>%
+  do(fill(.,Benchmark,.direction = "down")) %>%
+  ungroup() %>%
+  pivot_longer(., c(Value, Benchmark), names_to = "Type", values_to = "Value") %>%
+  ggplot(., aes(x=Week, y=Value, color = Vault, linetype = Type)) +
+  geom_line() +
+  scale_linetype_manual(values=c(2,1)) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Vault popularity: cumulative deposits") +
+  xlab("Date") + 
+  ylab("Cumulative Deposits (USD)")
+
+ggplotly(p1)
+
+
+```
+
+We also made a chart comparing net weekly deposits (in USD)  into each vault since the first week of February.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Net daily deposits
+p2 <- KATANA_DEPOSITS %>%
+  filter(Week >= as.Date("2022-01-28")) %>%
+  ggplot(., aes(x=Week, y=NetDepositsUSD, color = Vault)) +
+  geom_line() +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Vault popularity: net deposits") +
+  xlab("Week") + 
+  ylab("Net Deposits (USD)")
+ggplotly(p2)
+
+```
+
+The first plot shows how cumulative deposits for all vaults exploded since [Katana started](https://twitter.com/Katana_HQ/status/1472039521134985225) and up until about the beginning of January or mid-January in the case of the BTC vault. Since then, most vaults have stayed relatively flat or have seen some net withdrawals.
+
+That behavior persisted throughout February and March. Since the week that started on January 28th, three vaults (SOL, mSOL, LUNA) experienced mild net withdrawals while staying quite flat during the period, one experienced mild net deposits (BTC) and the ETH vault suffered considerable withdrawals (of about USD 3.000.000 or 30% of the net total amount ever deposited into the vault at the moment) at the start of February and stayed quite flat since then.
+
+Net weekly deposits tell us the same story. The ETH vault experienced a large amount of net withdrawals the second week of February and then some more the following week. The SOL vault also experienced more than $1 million of net withdrawals that week but recovered faster and that amount represents a significantly smaller share of the cumulative net deposit amount of the vault at the moment.
+
+
+### New users
+The second part of the changes in vaults’ popularity since February that we performed,  is based upon the number of new users each vault was able to attract during the period.
+
+New users are defined as depositors (deposits authority) that had never before deposited into the relevant vault.
+
+We started by plotting the weekly cumulative number of new depositors that each vault saw since the beginning of February as shown below.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+# Cumulative distinct users and daily new users
+KATANA_USERS <- KATANA_EVENTS %>%
+  filter(Type == "deposit") %>%
+  arrange(BlockTimestamp) %>%
+  group_by(Vault) %>%
+  mutate(DistinctUsers = cum_n_distinct(Address)) %>%
+  ungroup() %>%
+  mutate(Week = floor_date(BlockTimestamp, "week", week_start = getOption("lubridate.week.start", 5))) %>%
+  group_by(Vault, Week) %>%
+  arrange(Week) %>%
+  summarise(DistinctUsers = last(DistinctUsers), .groups = "drop") %>%
+  group_by(Vault) %>%
+  mutate(NewUsers = DistinctUsers - lag(DistinctUsers, n = 1, default = 0))
+
+#Cumulative
+p3 <- KATANA_USERS %>%
+  dplyr::filter(Week >= as.Date("2022-01-28")) %>%
+  mutate(CumulativeNewUsers = cumsum(NewUsers)) %>%
+  ggplot(., aes(x=Week, y=CumulativeNewUsers, color = Vault)) +
+  geom_line() +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Vault popularity: cumulative new depositors") +
+  xlab("Week") + 
+  ylab("Unique depositors")
+ggplotly(p3)
+```
+
+Then, we plotted the weekly amount of new users by vault to get a better sense of the rate of change of new depositors.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Weekly new users
+p4 <- KATANA_USERS %>%
+  filter(Week >= as.Date("2022-01-28")) %>%
+  ggplot(., aes(x=Week, y=NewUsers, color = Vault)) +
+  geom_line() +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Vault popularity: new depositors") +
+  xlab("Week") + 
+  ylab("New depositors")
+ggplotly(p4)
+```
+
+Unsurprisingly, it is quite clear that the Solana vault was the vault that was able to attract the most new users in this period. More surprising is that LUNA occupied the third position, above ETH and BTC and below mSOL, given that among the five studied vaults it is the one that has seen the less amount of cumulative deposits.
+
+Weekly new depositors show how the Solana vault was consistently, and by a considerable margin, the vault that attracted the most new depositors. While LUNA and mSOL were able to attract more depositors than ETH and BTC, particularly during the first couple of weeks of February.
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Vault interactions by wallet
+VAULT_DISTRIBUTION <- KATANA_EVENTS %>%
+  distinct(Address, Vault) %>%
+  group_by(Address) %>%
+  summarise(Vaults = n_distinct(Vault)) 
+
+VAULT_DIST_SUMMARY <- VAULT_DISTRIBUTION %>%
+  group_by(Vaults) %>%
+  summarise(N = n()) %>%
+  mutate(Percentage = N/sum(N))
+
+
+
+
+```
+
+
+## Crossover between vaults
+The second part of our analysis consists in identifying how many depositors have deposited in multiple vaults and which vaults have crossovers between them. We wanted to go a step further and as part of our analysis we identified:
+
+- The distribution of the number of vaults deposited-to by wallet
+- Crossover between any two vaults (the amount of wallets that deposited into both vaults)
+- The directed crossover between vaults (wallets that had deposited first into one vault and then deposited in the other).
+- The directed crossover between vaults as a percentage of wallets whose first Katana deposit was in the first vault (wallets that had deposited first into one vault and then deposited in the other, whose first Katana deposit was in the first vault).
+
+This will give us not only information on the number of users that have deposited to more than one vault, but also on how users interact with different vaults and which vaults lead to users depositing in others.
+
+### Distribution of vaults deposited-to by user
+First, we show the distribution of the number of deposited vaults by user. This allows us to answer not only “what percentage of wallets that have deposited into a covered call vault has also deposited into another vault?” but also the percentage of wallets that have deposited into three, four, or five different vaults.
+
+Distribution of the number of vaults deposited to by user:
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#What percentage of wallets that have deposited into a covered call vault have also deposited into another vault
+p5 <- VAULT_DIST_SUMMARY %>%
+  ggplot(., aes(x=Vaults, y=Percentage)) +
+  geom_bar(stat='identity', color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_y_continuous(labels = percent) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Used vaults by wallet: distribution") +
+  xlab("# used vaults") + 
+  ylab("Percentage of wallets")
+ggplotly(p5)
+
+```
+
+As a table:
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Vault distribution summary table
+VAULT_DIST_SUMMARY %>%
+  mutate(Percentage = scales::percent(Percentage, accuracy = 0.01)) %>%
+  reactable(.)
+
+```
+
+
+### Network of vaults
+We are also interested to see which wallets share depositors with others. Not stopping there, we also want to investigate the number of wallets that deposited into any vault and then deposited into any other vault. Finally, we want to know what percentage of users whose first deposit was into any given vault, then deposited into any other vault.
+
+For this purpose, we will treat vaults and shared wallets as a network, where each vault is a “node” and each connection between “nodes” (“edge”) takes different meanings depending on what we are trying to analyze.
+
+The table below shows a summary of the vaults (“nodes”), that includes the total number of different users that ever deposited into the vault and the total number of users whose first deposit was into that specific vault.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Network analysis
+#Nodes
+NODES <-  KATANA_EVENTS %>%
+  filter(Type == "deposit") %>%
+  arrange(BlockTimestamp) %>%
+  group_by(Address) %>%
+  mutate(FirstDeposit = if_else(BlockTimestamp == first(BlockTimestamp),1,0)) %>%
+  ungroup() %>%
+  group_by(Vault) %>%
+  summarise(Depositors = n_distinct(Address), FirstDepositors = sum(FirstDeposit)) %>%
+  rowid_to_column(., "ID")
+
+#Edges
+FIRST_DEPOSITS <- KATANA_EVENTS %>%
+  filter(Type == "deposit") %>%
+  arrange(BlockTimestamp) %>%
+  group_by(Address, Vault) %>%
+  summarise(FirstDeposit = first(BlockTimestamp), .groups = "drop")
+
+
+EDGES_WEIGHTS <- FIRST_DEPOSITS %>%
+  left_join(., FIRST_DEPOSITS, by = "Address") %>%
+  mutate(Keep = if_else(Vault.x != Vault.y & FirstDeposit.x < FirstDeposit.y, TRUE, FALSE)) %>%
+  filter(Keep == TRUE) %>%
+  rename(FromVault = Vault.x, ToVault = Vault.y) %>%
+  group_by(FromVault, ToVault) %>%
+  summarise(Weight = n(), .groups = "drop") %>%
+  left_join(., NODES %>%
+              select(ID, Vault, Depositors) %>%
+              rename(From = ID), by = c("FromVault" = "Vault")) %>%
+  left_join(., NODES %>%
+              select(ID, Vault) %>%
+              rename(To = ID), by = c("ToVault" = "Vault")) %>%
+  mutate(PercentageWeight = Weight/Depositors) %>%
+  select(From, To, Weight, PercentageWeight, FromVault, ToVault)
+  
+EDGES <- EDGES_WEIGHTS %>%
+  select(From, To, Weight) %>%
+  rowwise() %>%
+  mutate(First = min(From, To), Second = max(From,To)) %>%
+  ungroup() %>%
+  group_by(First, Second) %>%
+  summarise(Weight = sum(Weight), .groups = "drop") %>%
+  left_join(., NODES %>%
+              select(ID, Vault), by = c("First" = "ID")) %>%
+  rename(Vault1 = Vault) %>%
+  left_join(., NODES %>%
+              select(ID, Vault), by = c("Second" = "ID")) %>%
+  rename(Vault2 = Vault)
+
+NODES %>%
+  reactable(.)
+
+```
+
+#### Crossover between any two vaults  
+The “network” graph below shows the vaults as nodes and the total number of wallets that deposited into both vaults as edges or connections. The reader may notice that the size of the edges depends on the “crossover” number and the size of the nodes is logarithmically dependent on the total number of depositors into each vault.
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+###Network graphs
+#Plain crossover
+visNetwork(NODES %>%
+             mutate(Size = log(Depositors) * 3,
+                    Title = paste0("<p>",Vault," Vault -<br>Depositors<br>", Depositors,"</p>")) %>%
+             select(ID, Vault, Size, Title) %>%
+             setNames(c("id","label", "size", "title")),
+           EDGES %>%
+             mutate(Width = Weight/30,
+                    Title = paste0("<p>Crossover<br>", Weight,"</p>")) %>%
+             select(First, Second, Width, Title) %>%
+             setNames(c("from","to", "width", "title")) ) %>%
+  visIgraphLayout(layout = "layout_in_circle")
+
+```
+
+For clarity, below  we display the same information as an interactive table that can be sorted
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Table
+EDGES %>%
+  select(Vault1, Vault2, Weight) %>%
+  rename(Crossovers = Weight) %>%
+  arrange(desc(Crossovers)) %>%
+  reactable(.)
+  
+
+```
+
+
+As we can see, the mot prominent node in the “network” is the Solana vault, that has the most crossover with each of the other four vaults. Although this is unsurprising given that it is also the bigger node by its toal depositors number.
+
+
+#### From one vault to the other
+However, we did not want to stop with the crossover number, and instead wanted to also measure the total number of wallets that first deposited into one vault and then moved to another. We will call this a directed relationship that went from vault 1 to vault 2.
+
+Regular network graphs are not very good at displaying directed “edges”, so instead we show the relationships between nodes as a [Sankey diagram](https://en.wikipedia.org/wiki/Sankey_diagram). Grey lines indicates that the flow starts from the leftmost node and and red dotted lines indicates the contrary. The size of the lines depends on the size of the “flow”.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Directed crossover
+sankeyNetwork(Links = EDGES_WEIGHTS %>%
+                mutate(Width = Weight/30,
+                       Title = paste0("<p>Crossover<br>", Weight,"</p>"),
+                       From = From - 1,
+                       To = To -1) %>%
+                select(From, To, Width, Title, Weight) %>%
+                setNames(c("from","to", "width", "title", "Weight")), 
+              Nodes = NODES %>%
+                mutate(Size = log(FirstDepositors) * 3,
+                       ID = ID - 1,
+                       Title = paste0("<p>",Vault," Vault -<br>First Depositors<br>", FirstDepositors,"</p>")) %>%
+                select(ID, Vault, Size, Title) %>%
+                setNames(c("id","label", "size", "title")),
+              Source = "from", Target = "to", 
+              NodeID = "label", Value = "Weight", fontSize = 16, unit = "Crossovers")
+
+```
+
+
+For clarity, below we display the same information as an interactive table that can be sorted
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Table
+EDGES_WEIGHTS %>%
+  select(FromVault, ToVault, Weight) %>%
+  rename(Crossovers = Weight) %>%
+  arrange(desc(Crossovers)) %>%
+  reactable(.)
+
+```
+
+As wee can observe from the above diagram and table, the SOL vault was the most common “originator” of these relationships. This means that basically, for every user that deposited into a second vault, most likely that user had deposited in the SOL vault before.
+
+The SOL vault was followed in “origination quantity “ by the mSOL and LUNA vaults. The ETH and BTC vaults were the ones with the smaller number of users that later deposited into another vault.
+
+#### From one vault to the other 
+Finally, we wanted to understand the likelihood of a user depositing in a second vault if that user had first deposited into one of the five vaults. To do this, we normalized the above “directed crossover” number by the total number of users whose first deposit was into the “origination” vault.
+
+Below, we show a Sankey diagram that is similar to the previous one with the difference that this one is “normalized”.
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Directed and percentage weighted crossover
+sankeyNetwork(Links = EDGES_WEIGHTS %>%
+                mutate(PercentageWeight = PercentageWeight * 100,
+                       Title = paste0("<p>Crossover<br>", Weight,"</p>"),
+                       From = From - 1,
+                       To = To -1) %>%
+                select(From, To, Title, PercentageWeight) %>%
+                setNames(c("from","to", "title", "Weight")), 
+              Nodes = NODES %>%
+                mutate(Size = log(FirstDepositors) * 3,
+                       ID = ID - 1,
+                       Title = paste0("<p>",Vault," Vault -<br>First Depositors<br>", FirstDepositors,"</p>")) %>%
+                select(ID, Vault, Size, Title) %>%
+                setNames(c("id","label", "size", "title")),
+              Source = "from", Target = "to", 
+              NodeID = "label", Value = "Weight", fontSize = 16, unit = "%Crossovers")
+
+```
+
+For clarity, below we display the same information as an interactive table that can be sorted
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+EDGES_WEIGHTS %>%
+  select(FromVault, ToVault, PercentageWeight) %>%
+  rename(PercentageCrossovers = PercentageWeight) %>%
+  arrange(desc(PercentageCrossovers)) %>%
+  mutate(PercentageCrossovers = scales::percent(PercentageCrossovers, accuracy = 0.01)) %>%
+  reactable(.)
+
+```
+
+
+In contrast to non-normalized directed crossovers, we can observe that the users that were most likely to deposit into another vault after depositing in a specific vault were those that deposited into the ETH or BTC vaults.
+
+Users that deposited into the SOL vault were the less likely to deposit in a different vault.
+
+This makes intuitive sense, given that Katana is native to the Solana chain and its target audience are likely to be bullish on its performance and consequently  into the SOL coin performance.
+
+Those users might not be so willing to hold other coins and therefore not likely to deposit into one of the other vaults.
+However, users that deposit into the BTC or ETH vaults migh either be primarily in other chains or be “self-selected” in that they are the kind of users that want a diversified portfolio that holds many coins. In either of these two cases, those users would be more likely to later deposit into other chains.
