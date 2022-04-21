@@ -1,0 +1,236 @@
+---
+title: "What Are Whales Swapping For?"
+author: "laz97"
+date: '2022-04-14'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+
+In this dashboard, we study what Algorand Whales are swapping.
+
+We start by proposing a ser of criteria that identifies whales in the Algorand ecosystem.
+
+We follow by showing the percentage of whales that have swapped since the start of 2022 and the distribution of the number of swaps of the wallets that have done so.
+
+Finally, we show, over time, the number of swaps from and to different ASAs.
+
+All data used on this document comes from Flipsidecrypto's algorand.swaps, algorand.asset, algorand.account and algorand.labels tables.
+
+The query can be found [here](https://app.flipsidecrypto.com/velocity/queries/95dd3327-d4c1-437d-8b1f-ccfff80a4e4c) and the code underlying the document can be found [here]().
+
+
+## Algorand Whales
+
+The first section of this dashboard outlines the conditions that wallets must meet in order to be considered whales in the remainder of this document.
+
+An important consideration that we should take into account is that in a less mature network than some competitors, the threshold that differentiates whales from the rest must be lower.
+
+As an analogy, consider the creatures on the top of the food chain in the vast oceans: huge animals such as whales and sharks. However, in a smaller pond, a fish need not be that big to sit atop the food chain. The same holds true of Algorand when compared with the likes of Ethereum and, to a lesser extent, Solana.
+
+Taking this into consideration, we propose the following criteria for identifying whales:
+- Unclosed accounts
+- Wallet types that are not 'lsig' programmatic accounts (must be user(s) controlled).
+- Wallets not found in the algorand.labels table, as those belong to projects, protocols, and companies, not individual whales.
+- Wallets with a balance of at least 200.000 ALGOs.
+
+Below, a summary of all wallets in Algorand that meet said criteria (aka"whales"):
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, geckor, tidyquant, data.table, igraph, tidygraph, ggraph, visNetwork, networkD3, RColorBrewer, ggdark, plotly, scales, reactable)
+
+#Import tables
+WHALES <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/979d26c8-3008-42bc-aa10-ad5af0df39f8/data/latest") %>% 
+  as_tibble(.) %>%
+  select(-ADDRESS_NAME, -CLOSED_AT, -ACCOUNT_CLOSED)
+
+WHALES_SWAPS <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/95dd3327-d4c1-437d-8b1f-ccfff80a4e4c/data/latest") %>% 
+  as_tibble(.) %>%
+  mutate(BLOCK_TIMESTAMP = as.POSIXct(BLOCK_TIMESTAMP, tz = "UTC"))
+
+
+
+
+```
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#Whales summary table
+WHALES %>%
+  summarise(COUNT = n(),
+            MAX_BALANCE = max(BALANCE),
+            AVG_BALANCE = mean(BALANCE),
+            MEDIAN_BALANCE = median(BALANCE),
+            MIN_BALANCE = min(BALANCE)) %>%
+  reactable::reactable(., columns = list(
+    MAX_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2)),
+    AVG_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2)),
+    MEDIAN_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2)),
+    MIN_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2))))
+
+```
+
+
+And a table with all the individual wallets:
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Whales table
+WHALES %>%
+  select(-REWARDSBASE, -REWARDS_TOTAL, - CREATED_AT) %>%
+  reactable::reactable(., columns = list(
+    BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2))))
+
+```
+
+
+## Whales and Swaps
+
+Below, we show the percentage of whales that have swapped at least once since the beginning of 2022:
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Whales that have swapped
+p0 <- WHALES_SWAPS %>%
+  group_by(SWAPPER) %>%
+  summarise(SWAPS = n()) %>% 
+  left_join(WHALES %>%
+              select(ADDRESS, BALANCE), ., by  = c("ADDRESS" = "SWAPPER")) %>%
+  arrange(desc(SWAPS)) %>%
+  mutate(SWAPS = if_else(is.na(SWAPS),as.double(0),as.double(SWAPS))) %>%
+  mutate(HAS_SWAPPED = if_else(SWAPS >0, "yes", "no")) %>%
+  group_by(HAS_SWAPPED) %>%
+  summarise(COUNT = n()) %>%
+  mutate(PERCENTAGE = COUNT/sum(COUNT)) %>%
+  ggplot(., aes(x = HAS_SWAPPED, y = PERCENTAGE, fill = HAS_SWAPPED)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Percetnage of whales that have swapped") +
+  xlab("Has swapped?") + 
+  ylab("Percentage of whales")
+  
+ggplotly(p0)
+
+```
+
+As you can see, only a tiny proportion of whales performed swaps in this period. This proportion, 2.1%, corresponds to 18 wallets out of 854.
+
+Furthermore, we want to understand the distribution of the number of swaps these 18 wallets performed. Below we show a histogram with the number of swaps on the x-axis and the number of whales on the y-axis.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Whales number of swaps distribution
+p1 <- WHALES_SWAPS %>%
+  group_by(SWAPPER) %>%
+  summarise(SWAPS = n()) %>%
+  ggplot(., aes(x=SWAPS)) + 
+  geom_histogram(bins = 40, color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_color_brewer(palette = "Set3") +
+  dark_theme_gray() +
+  ggtitle("Distribution of swaps by whales") +
+  xlab("Swaps") + 
+  ylab("Number of whales")
+ggplotly(p1)
+```
+
+We also show the number of swaps performed by each individual wallet for clarity.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Summary of whales that swapped
+WHALES_SWAPS %>%
+  group_by(SWAPPER) %>%
+  summarise(SWAPS = n()) %>%
+  reactable(.)
+
+```
+
+As we can observe, there was great variability in the number of swaps each of these whales performed, with more than half performing less than 7 swaps and the top one performing 80 swaps.
+
+## Whales favorite ASAs
+
+The following table summarises all ASAs that have been swapped by whales since the beginning of the year. It shows the total number of whales that have performed swaps involving each ASA, the number of swaps from a to each ASA, and the total number of swaps involving each one.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+# Assets that whales are swapping from summary
+WHALES_SWAPS %>%
+  mutate(ASA = SWAP_FROM_NAME) %>%
+  group_by(ASA) %>%
+  summarise(WHALES_FROM = n_distinct(SWAPPER),
+            SWAPS_FROM = n()) %>%
+  left_join(., WHALES_SWAPS %>%
+                mutate(ASA = SWAP_TO_NAME) %>%
+              group_by(ASA)%>%
+              summarise(WHALES_TO = n_distinct(SWAPPER),
+                        SWAPS_TO = n()), 
+            by = "ASA") %>%
+  mutate(WHALES = WHALES_FROM + WHALES_TO,
+         SWAPS = SWAPS_FROM + SWAPS_TO) %>%
+  select(ASA, WHALES, SWAPS_FROM, SWAPS_TO, SWAPS) %>%
+  arrange(desc(SWAPS)) %>%
+  reactable(.)
+
+
+```
+
+Below, we plot the weekly number of swaps from all assets that whales performed since the start of 2022:
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Assets that whales are swapping from over time
+p2 <- WHALES_SWAPS %>%
+  mutate(WEEK = ceiling_date(BLOCK_TIMESTAMP, "week")) %>%
+  group_by(WEEK, SWAP_FROM_NAME) %>%
+  summarise(WHALES = n_distinct(SWAPPER),
+            SWAPS = n(), .groups = "drop") %>%
+  left_join(WHALES_SWAPS %>%
+              mutate(WEEK = ceiling_date(BLOCK_TIMESTAMP, "week")) %>%
+              expand(WEEK, SWAP_FROM_NAME), ., by = c("WEEK", "SWAP_FROM_NAME")) %>%
+  mutate(SWAPS = if_else(is.na(SWAPS),as.double(0),as.double(SWAPS))) %>% 
+  arrange(WEEK) %>%
+  ggplot(., aes(x=WEEK, y=SWAPS, color = SWAP_FROM_NAME)) +
+  geom_line() +
+  dark_theme_gray() +
+  ggtitle("Weekly number of swaps from ASAs by Whales") +
+  xlab("Week") + 
+  ylab("Swaps from ASA")
+ggplotly(p2)
+
+```
+
+And the weekly number swaps to all assets:
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+p3 <- WHALES_SWAPS %>%
+  mutate(WEEK = ceiling_date(BLOCK_TIMESTAMP, "week")) %>%
+  group_by(WEEK, SWAP_TO_NAME) %>%
+  summarise(WHALES = n_distinct(SWAPPER),
+            SWAPS = n(), .groups = "drop") %>%
+  left_join(WHALES_SWAPS %>%
+              mutate(WEEK = ceiling_date(BLOCK_TIMESTAMP, "week")) %>%
+              expand(WEEK, SWAP_TO_NAME), ., by = c("WEEK", "SWAP_TO_NAME")) %>%
+  mutate(SWAPS = if_else(is.na(SWAPS),as.double(0),as.double(SWAPS))) %>% 
+  arrange(WEEK) %>%
+  ggplot(., aes(x=WEEK, y=SWAPS, color = SWAP_TO_NAME)) +
+  geom_line() +
+  dark_theme_gray() +
+  ggtitle("Weekly number of swaps to ASAs by Whales") +
+  xlab("Week") + 
+  ylab("Swaps to ASA")
+ggplotly(p3)
+
+  
+
+```
+
+
+From these charts, we have that the most common to both swap from and swap to are Algo, Yieldly, Opolous and USDC.
+
+However, GARD has recently spiked in the number of swaps where it was received by a Whale.
