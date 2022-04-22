@@ -1,0 +1,219 @@
+---
+title: "Thorra-Luna-UST"
+author: "laz97"
+date: '2022-04-22'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+The Terra blockchain has recently been added to Thorchain, and with it, its two most popular assets: LUNA and UST. In this dashboard, we study the behavior of these pools since inception.
+
+We start by comparing the swap volume  (USD), swap count, and fees of the LUNA and UST pools against the rest of the pools in Thorchain.
+
+We then attempt to show if there is any balance in the direction of the swaps in these two pools.
+
+All data used for this dashboard comes from Flipsidecrypto's thorchain.daily_pool_stats table. In the spirit of reproducibility, the code underlying this document can be found [here]() and the query to get the data can be found [here](https://app.flipsidecrypto.com/velocity/queries/29a931d0-093a-406d-9adf-90abaf44d773).
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, geckor, tidyquant, data.table, igraph, tidygraph, ggraph, visNetwork, networkD3, RColorBrewer, ggdark, plotly, scales, reactable)
+
+#Function
+GGplotStyleMapper <- function(DF, Variable_Column, Values, Styles, ID_Column = NA) {
+  
+  if(length(Values) > length(Styles)) {warning("More values than styles")}
+  
+  non_matching <- setdiff(Values, unique(DF[[Variable_Column]]))
+  if(length(non_matching) > 0) {warning("The following specified values do not match values in DF column:", paste(non_matching, collapse = " "))}
+  
+  #Map styles
+  mapped_styles_specified <- tibble(Value = Values, Style = Styles[1:length(Values)])
+  
+  mapped_styles_others <- tibble(Value = setdiff(unique(DF[[Variable_Column]]), Values),
+                                 Style = rep(Styles[(length(Values)+1):length(Styles)], length.out = length(setdiff(unique(DF[[Variable_Column]]), Values))))
+  
+  output <- full_join(mapped_styles_specified, mapped_styles_others, by = c("Value", "Style")) %>%
+    deframe(.)
+  
+  
+  #Not tested
+  if(!is.na(ID_Column)) {
+    if(nrow(distinct(DF, c(ID_Column))) != nrow(distinct(DF, c(ID_Column, Variable_Column)))) {
+      warning("ID column values do not match criteria of having one match each on the Variable column")
+    }
+    
+    output <- distinct(DF, c(ID_Column, Variable_Column)) %>%
+      select(ID = 1, Value = 2) %>%
+      left_join(., output, by = "Value") %>%
+      select(., - Value) %>%
+      deframe(.)
+  }
+  
+  output
+  
+}
+
+#Get data
+POOLS_DAILY <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/15878177-7ac9-40ba-84f8-2f7bc82cd891/data/latest") %>% 
+  as_tibble(.) %>%
+  mutate(DATE = as.POSIXct(DATE, tz = "UTC"),
+    FROM_ASSET = str_replace_all(FROM_ASSET, "/", "\\.")) %>%
+  group_by(DATE, FROM_ASSET, POOL_NAME) %>%
+  summarise(FEES_USD = sum(FEES_USD),
+            FROM_AMOUNT_USD = sum(FROM_AMOUNT_USD),
+            SWAPS = sum(SWAPS), .groups = "drop")
+
+#Volumes and fees by pool
+POOLS_SUMMARY <- POOLS_DAILY %>%
+  filter(DATE >=  as.Date("2022-03-25")) %>%
+  arrange(DATE) %>%
+  group_by(DATE, POOL_NAME) %>%
+  summarise(FEES_USD = sum(FEES_USD),
+            FROM_AMOUNT_USD = sum(FROM_AMOUNT_USD), 
+            SWAPS = sum(SWAPS), .groups = "drop")
+```
+
+## The LUNA & UST pools vs the rest
+We start by comparing the number of swaps in every pool in Thorchoin since Terra was added to it. For easier visualization, we highlight the LUNA and UST pools in orange and green respectively.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Performance plots
+#Swaps
+p1 <- POOLS_SUMMARY %>%
+  ggplot(., aes(x = DATE, y = SWAPS, group = POOL_NAME, color = POOL_NAME, size = POOL_NAME)) +
+  geom_line() +
+  scale_color_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),RColorBrewer::brewer.pal(3, "Set2"))) +
+  scale_size_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),c(1,1,0.5))) + 
+  theme(legend.position = "none") +
+  ggtitle("Swaps by pool") +
+  xlab("Date") + 
+  ylab("Swaps") +
+  scale_y_continuous(labels = scales::comma)
+ggplotly(p1)
+```
+
+Then, we show the comparison of daily swap volumes (in USD) of Thorchain pools, again highlighting the LUNA and UST pools. Pool volume is measured as the USD value of the origination asset of each swap.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Volume
+p2 <- POOLS_SUMMARY %>%
+  ggplot(., aes(x = DATE, y = FROM_AMOUNT_USD, group = POOL_NAME, color = POOL_NAME, size = POOL_NAME)) +
+  geom_line() +
+  scale_color_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),RColorBrewer::brewer.pal(3, "Set2"))) +
+  scale_size_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),c(1,1,0.5))) + 
+  theme(legend.position = "none") +
+  ggtitle("Volume (USD) by pool") +
+  xlab("Date") + 
+  ylab("Volume") +
+  scale_y_continuous(labels = comma_format())
+ggplotly(p2)
+```
+
+Lastly, we show the fees generated by each pool, once again, highlighting the LUNA and UST pools.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Fees
+p3 <- POOLS_SUMMARY %>%
+  ggplot(., aes(x = DATE, y = FEES_USD, group = POOL_NAME, color = POOL_NAME, size = POOL_NAME)) +
+  geom_line() +
+  scale_color_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),RColorBrewer::brewer.pal(3, "Set2"))) +
+  scale_size_manual(values = GGplotStyleMapper(POOLS_SUMMARY, "POOL_NAME", c("TERRA.UST", "TERRA.LUNA"),c(1,1,0.5))) + 
+  theme(legend.position = "none") +
+  ggtitle("Fees (USD) by pool") +
+  xlab("Date") + 
+  ylab("Fees") +
+  scale_y_continuous(labels = comma_format())
+ggplotly(p3)
+
+```
+
+A few takeaways that we can get from this are:
+- UST and LUNA quickly jumped to being among the main pools in Thorchain by these three measures.
+- Particularly the UST pool seems to be the second pool by swap count and volume, and the first pool by fees generated, driven by outsized fees (by all accounts) on April 14th.
+- The BNB BUSD pool is the clear leader by swap count and volume in this period.
+
+## Balance on the LUNA & UST pools
+In this section, we investigate if there is any balance in the direction of the swaps on the LUNA and UST pools.
+
+Our strategy centers around measuring the proportion of swaps and swaps volume originated in each asset of the pools (LUNA or UST, depending on the pool, on one hand, and RUNE on the other).
+
+For this reason, we plot for each pool the following:
+- The proportion of swaps in which the origination asset was either LUNA or UST (depending on the pool) vs the proportion of swaps in which the origination asset was RUNE.
+- The volume proportion of swaps in which the origination asset was either LUNA or UST (depending on the pool) vs the volume proportion of swaps in which the origination asset was RUNE.
+
+#### LUNA
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#LP Balance
+#Luna
+# Volume
+p4 <- POOLS_DAILY %>%
+  filter(POOL_NAME == "TERRA.LUNA") %>%
+  group_by(DATE) %>%
+  mutate(PERCENTAGE = FROM_AMOUNT_USD/sum(FROM_AMOUNT_USD)) %>%
+  ggplot(., aes(x=DATE, y=PERCENTAGE, fill=FROM_ASSET)) + 
+  geom_area() +
+  ggtitle("TERRA.LUNA swaps' volume by origination asset") +
+  xlab("Date") + 
+  ylab("Volume percentage") +
+  scale_y_continuous(labels = scales::percent)
+ggplotly(p4)
+```
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Count
+p5 <- POOLS_DAILY %>%
+  filter(POOL_NAME == "TERRA.LUNA") %>%
+  group_by(DATE) %>%
+  mutate(PERCENTAGE = SWAPS/sum(SWAPS)) %>%
+  ggplot(., aes(x=DATE, y=PERCENTAGE, fill=FROM_ASSET)) + 
+  geom_area() +
+  ggtitle("TERRA.LUNA swaps' count by origination asset") +
+  xlab("Date") + 
+  ylab("Swap percentage") +
+  scale_y_continuous(labels = scales::percent)
+ggplotly(p5)
+```
+
+As we can see, by both measures the LUNA pool seems to be quite balanced. 
+
+#### UST
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#UST
+# Volume
+p6 <- POOLS_DAILY %>%
+  filter(POOL_NAME == "TERRA.UST") %>%
+  group_by(DATE) %>%
+  mutate(PERCENTAGE = FROM_AMOUNT_USD/sum(FROM_AMOUNT_USD)) %>%
+  ggplot(., aes(x=DATE, y=PERCENTAGE, fill=FROM_ASSET)) + 
+  geom_area() +
+  ggtitle("TERRA.UST swaps' volume by origination asset") +
+  xlab("Date") + 
+  ylab("Volume percentage") +
+  scale_y_continuous(labels = scales::percent)
+ggplotly(p6)
+```
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Count
+p7 <- POOLS_DAILY %>%
+  filter(POOL_NAME == "TERRA.UST") %>%
+  group_by(DATE) %>%
+  mutate(PERCENTAGE = SWAPS/sum(SWAPS)) %>%
+  ggplot(., aes(x=DATE, y=PERCENTAGE, fill=FROM_ASSET)) + 
+  geom_area() +
+  ggtitle("TERRA.UST swaps' count by origination asset") +
+  xlab("Date") + 
+  ylab("Swap percentage") +
+  scale_y_continuous(labels = scales::percent)
+ggplotly(p7)
+```
+
+Although the by volumes the UST pool seems to be quite balanced, when we consider the swap counts it seems clear that there are consistently a greater amount of swaps that originate in UST than in RUNE in this pool.
