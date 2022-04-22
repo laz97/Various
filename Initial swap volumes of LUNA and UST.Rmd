@@ -1,0 +1,91 @@
+---
+title: "Initial swap volumes of LUNA and UST"
+author: "laz97"
+date: '2022-04-22'
+output:
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+## Introduction
+The Terra blockchain has recently been added to Thorchain, and with it, its two most popular assets: LUNA and UST. In this dashboard, we compare the volume and swap count of the LUNA and UST pools in their first three days with the first four days of the DOGE pool, another recently added asset/chain.
+
+All data used for this dashboard comes from Flipsidecrypto's thorchain.daily_pool_stats table. In the spirit of reproducibility, the code underlying this document can be found [here]() and the query to get the data can be found [here](https://app.flipsidecrypto.com/velocity/queries/29a931d0-093a-406d-9adf-90abaf44d773).
+
+## LUNA & UST vs. DOGE
+In the charts below, we show the total swap volume in USD (measured as the USD value of the origination asset) and the total swap count for each pool on the first four days since they were inaugurated. Day 0 marks the day of pool inception.
+
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, geckor, tidyquant, data.table, igraph, tidygraph, ggraph, visNetwork, networkD3, RColorBrewer, ggdark, plotly, scales, reactable)
+
+#Get data
+POOLS_DAILY <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/15878177-7ac9-40ba-84f8-2f7bc82cd891/data/latest") %>% 
+  as_tibble(.) %>%
+  mutate(DATE = as.POSIXct(DATE, tz = "UTC"),
+    FROM_ASSET = str_replace_all(FROM_ASSET, "/", "\\.")) %>%
+  group_by(DATE, FROM_ASSET, POOL_NAME) %>%
+  summarise(FEES_USD = sum(FEES_USD),
+            FROM_AMOUNT_USD = sum(FROM_AMOUNT_USD),
+            SWAPS = sum(SWAPS), .groups = "drop")
+```
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Volumes
+p0 <- POOLS_DAILY %>%
+  filter(POOL_NAME %in% c("TERRA.UST", "TERRA.LUNA", "DOGE.DOGE")) %>%
+  arrange(DATE) %>%
+  group_by(POOL_NAME) %>%
+  mutate(
+    DATE = as.Date(DATE),
+    DATE_REFERENCE = first(DATE),
+    DATE_INDEX = DATE - DATE_REFERENCE) %>%
+  filter(DATE_INDEX <= 3) %>%
+  group_by(DATE, DATE_REFERENCE, DATE_INDEX, POOL_NAME) %>%
+  summarise(SWAPS = sum(SWAPS),
+            FEES_USD = sum(FEES_USD),
+            FROM_AMOUNT_USD = sum(FROM_AMOUNT_USD), .groups = "drop") %>%
+  ggplot(., aes(x = DATE_INDEX, y = FROM_AMOUNT_USD, group = POOL_NAME, color = POOL_NAME)) +
+  geom_line() +
+  ggtitle("Volume by pool since inception") +
+  xlab("Days since added to Thorchain") + 
+  ylab("Volume (USD)") +
+  scale_y_continuous(labels = scales::comma)
+
+ggplotly(p0)
+```
+
+
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Count
+p1 <- POOLS_DAILY %>%
+  filter(POOL_NAME %in% c("TERRA.UST", "TERRA.LUNA", "DOGE.DOGE")) %>%
+  arrange(DATE) %>%
+  group_by(POOL_NAME) %>%
+  mutate(
+    DATE = as.Date(DATE),
+    DATE_REFERENCE = first(DATE),
+    DATE_INDEX = DATE - DATE_REFERENCE) %>%
+  filter(DATE_INDEX <= 3) %>%
+  group_by(DATE, DATE_REFERENCE, DATE_INDEX, POOL_NAME) %>%
+  summarise(SWAPS = sum(SWAPS),
+            FEES_USD = sum(FEES_USD),
+            FROM_AMOUNT_USD = sum(FROM_AMOUNT_USD), .groups = "drop") %>%
+  ggplot(., aes(x = DATE_INDEX, y = SWAPS, group = POOL_NAME, color = POOL_NAME)) +
+  geom_line() +
+  ggtitle("Swaps by pool since inception") +
+  xlab("Days since added to Thorchain") + 
+  ylab("Swaps") +
+  scale_y_continuous(labels = scales::comma)
+
+ggplotly(p1)
+```
+
+As we can see on both charts, LUNA and UST, especially the latter, had a better start in Thorchain than DOGE. UST surpassed USD 8 million in daily volume by its second day, while LUNA surpassed USD 3 million.
