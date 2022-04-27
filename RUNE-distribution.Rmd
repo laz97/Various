@@ -1,0 +1,99 @@
+---
+title: "$RUNE Distribution"
+author: "laz97"
+date: '2022-04-26'
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+## Introduction
+In this dashboard, we analyze RUNE holdings by wallets in the Thorchain network. Using historical transfer data (and liquidity actions in Liquidity Pools), we mapped the current amount of RUNE that each address holds (both as a Balance in their wallet and as liquidity deposited in LPs).
+
+We start by briefly explaining how RUNE holdings by wallet were estimated.
+
+Then, we move on to plot wallet RUNE holdings distribution: both as a frequency distribution and an "inverse" cumulative distribution.
+
+Finally, we present a table with all addresses RUNE holdings, discriminating between wallet balance and LP assets.
+
+All data used on this dashboard comes from Flipsidecrypto's thorchain.transfers and thorchain.liquidity_actions tables. For transparency, the query used to retrieve it can be found [here](https://app.flipsidecrypto.com/velocity/queries/abafc5d3-287a-46ec-9420-02ce86779350) and the code underlying this document can be found [here]().
+
+## RUNE holdings estimation
+Both wallet RUNE balances and RUNE deposited into liquidity pools were included in each wallet's RUNE total holdings.
+
+The process to estimate addresses RUNE balances was quite straightforward: the RUNE amount was debited from each address any time they originated a transfer and was credited whenever they received said transfer.
+
+Regarding liquidity pool holdings, the assumption was made that whoever deposited into a liquidity pool any amount of RUNE had the sole claim to it, and said claim could not be transformed to other assets (claims-are-untransferable-and-immutable assumption). From this, we were able to also map RUNE assets in liquidity pools for each account by measuring their historical RUNE deposits and withdrawals to and from pools (the net amount being their current claimable RUNEs).
+
+An important consideration that should be highlighted for the reader is that this analysis does not suffer from double accounting issues, as liquidity events have a matching and opposite transfer.
+
+For example, if wallet A deposits RUNE into a liquidity pool, two things will happen: 1) wallet A will transfer said amount of RUNE out to the LP address, reducing its balance amounts; and 2) wallet A will generate a claim into the liquidity pool that increases its LP assets. The same holds true in the opposite direction.
+
+
+```{r setup ,results = 'hide', echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Libraries
+library(pacman)
+pacman::p_load(tidyverse, dbplyr, RSQLite, lubridate, openxlsx, here, geckor, tidyquant, data.table, igraph, tidygraph, ggraph, visNetwork, networkD3, RColorBrewer, ggdark, plotly, scales, reactable, ggiraph)
+
+#Get data
+BALANCES <- jsonlite::fromJSON("https://api.flipsidecrypto.com/api/v2/queries/abafc5d3-287a-46ec-9420-02ce86779350/data/latest") %>% 
+  as_tibble(.) %>%
+  mutate(RUNE_TOTAL_BALANCE = if_else(RUNE_TOTAL_BALANCE < 0,0,RUNE_TOTAL_BALANCE))
+
+
+```
+
+## RUNE holdings distribution
+To allow the reader to observe the characteristics of RUNE holdings distribution, we plotted two distributions: the frequency distribution and an "inverse" cumulative distribution.
+
+Given the nature of these kind of distributions, we adjusted the RUNE amount axis logarithmically. 
+
+Both are presented below:
+#### Frequency distribution
+
+```{r fig.width=6, fig.height=9, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Frequency
+p0 <- ggplot(BALANCES, aes(x=RUNE_TOTAL_BALANCE)) + 
+  geom_histogram_interactive(bins=18, aes(y = stat(count) / sum(count),tooltip = round(stat(count) / sum(count), digits = 4)), color = RColorBrewer::brewer.pal(3,"Set3")[[1]] ) +
+  scale_x_continuous(trans = "log10", labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  ggtitle("Frequency distribution of addresses' RUNE balances") +
+  xlab("RUNE balance") + 
+  ylab("Frequency")
+
+girafe(ggobj = p0)  
+
+```
+
+#### Inverse cumulative distribution
+
+```{r fig.width=10, fig.height=7, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+#Cumulative
+p1 <- BALANCES %>%
+  mutate(CUME_PROB = cume_dist(RUNE_TOTAL_BALANCE)) %>%
+  arrange(RUNE_TOTAL_BALANCE) %>%
+  ggplot(., aes(x=CUME_PROB, y= RUNE_TOTAL_BALANCE)) + 
+  geom_step(color = RColorBrewer::brewer.pal(3,"Set3")[[1]]) +
+  scale_y_log10(labels = label_comma()) +
+  scale_color_brewer(palette = "Set3") +
+  ggtitle("Inverse cumulative probability distribution of addresses' RUNE balances") +
+  xlab("Cumulative probability") + 
+  ylab("RUNE balance")
+
+ggplotly(p1)
+```
+
+## RUNE holdings by address
+Below, we present a table with the RUNE holdings of all wallets in Thorchain.
+
+```{r fig.width=9, fig.height=6, fig.align='center', include = TRUE, echo = FALSE, error=FALSE, warning=FALSE, message=FALSE}
+BALANCES %>%
+  arrange(desc(RUNE_TOTAL_BALANCE)) %>%
+  reactable(.,columns = list(
+    RUNE_WALLET_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2)),
+    RUNE_LP_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2)),
+    RUNE_TOTAL_BALANCE = colDef(format = colFormat(separators = TRUE, digits = 2))))
+
+```
+
